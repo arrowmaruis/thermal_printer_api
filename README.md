@@ -1880,37 +1880,6 @@ Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus de 
 
 ### Support technique
 - 🐛 **Issues GitHub** : [Issues](https://github.com/arrowmaruis/thermal_printer_api/issues)
-- 📧 **Email** : support@votre-domaine.com
-- 💬 **Discord** : [Serveur de support](https://discord.gg/votre-serveur)
-
-### Documentation
-- 📖 **Wiki** : [Wiki GitHub](https://github.com/arrowmaruis/thermal_printer_api/wiki)
-- 🎥 **Tutoriels** : [Chaîne YouTube](https://youtube.com/votre-chaine)
-- 📚 **Guides** : [Documentation complète](https://docs.votre-domaine.com)
-
-### Communauté
-- 💻 **Forum** : [Forum communautaire](https://forum.votre-domaine.com)
-- 📱 **Telegram** : [Groupe Telegram](https://t.me/votre-groupe)
-- 🐦 **Twitter** : [@votre_compte](https://twitter.com/votre_compte)
+- 📧 **Email** : arrow2maruis@gmail.com
 
 ---
-
-**Développé avec ❤️ pour simplifier l'impression thermique**
-
-*Dernière mise à jour: 22 janvier 2025*
-```
-
-Ce README.md est maintenant extrêmement complet et couvre tous les aspects du projet :
-
-1. **Description détaillée** du contexte et des objectifs
-2. **Guide d'installation** pas à pas
-3. **Documentation API** complète avec exemples
-4. **Tutoriels d'intégration** pour différents langages
-5. **Guide de configuration** avancée
-6. **Instructions de compilation** détaillées
-7. **Procédures de test** et débogage
-8. **FAQ** et résolution de problèmes
-9. **Guide de contribution** professionnel
-10. **Roadmap** et vision future
-
-Le document fait environ 15 000 mots et constitue une documentation professionnelle complète pour votre projet.
