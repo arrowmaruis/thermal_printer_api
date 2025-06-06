@@ -370,7 +370,10 @@ class ModernApp(tk.Tk):
         self.create_stat_card(stats_frame, "Port API", config.get('port', 5789), 2)
         
         # Nouvelle carte pour l'encodage
-        self.create_stat_card(stats_frame, "Encodage", config.get('default_encoding', 'utf-8'), 3)
+        encoding_display = config.get('default_encoding', 'auto')
+        if encoding_display == 'auto':
+            encoding_display = 'auto (ASCII/cp1252)'
+        self.create_stat_card(stats_frame, "Encodage", encoding_display, 3)
         
         # Section des actions rapides
         actions_title = ttk.Label(self.page_container, text="Actions rapides", 
@@ -432,7 +435,7 @@ class ModernApp(tk.Tk):
         tree_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
         # Créer un Treeview
-        columns = ("name", "status", "width", "port")
+        columns = ("name", "status", "width", "encoding", "port")
         self.printer_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", 
                                       selectmode="browse", style="Treeview")
         
@@ -440,13 +443,15 @@ class ModernApp(tk.Tk):
         self.printer_tree.heading("name", text="Nom de l'imprimante")
         self.printer_tree.heading("status", text="Statut")
         self.printer_tree.heading("width", text="Largeur")
+        self.printer_tree.heading("encoding", text="Encodage")
         self.printer_tree.heading("port", text="Port")
         
         # Définir les largeurs de colonnes
-        self.printer_tree.column("name", width=250, anchor=tk.W)
-        self.printer_tree.column("status", width=100, anchor=tk.CENTER)
-        self.printer_tree.column("width", width=80, anchor=tk.CENTER)
-        self.printer_tree.column("port", width=150, anchor=tk.W)
+        self.printer_tree.column("name", width=200, anchor=tk.W)
+        self.printer_tree.column("status", width=80, anchor=tk.CENTER)
+        self.printer_tree.column("width", width=60, anchor=tk.CENTER)
+        self.printer_tree.column("encoding", width=70, anchor=tk.CENTER)
+        self.printer_tree.column("port", width=120, anchor=tk.W)
         
         # Ajouter un scrollbar
         scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.printer_tree.yview)
@@ -478,11 +483,12 @@ class ModernApp(tk.Tk):
                 if printer['id'] == config.get('default_printer_id'):
                     status = "Par défaut"
                 
-                # Obtenir la largeur détectée
+                # Obtenir la largeur et l'encodage détectés
                 width = printer.get('width', '58mm')
+                encoding = printer.get('encoding', 'cp1252')
                 
                 # Ajouter à la liste avec l'ID caché à la fin des valeurs
-                values = (printer['name'], status, width, printer['port'], printer['id'])
+                values = (printer['name'], status, width, encoding, printer['port'], printer['id'])
                 
                 self.printer_tree.insert("", tk.END, values=values, tags=(status.lower(),))
             
@@ -490,7 +496,7 @@ class ModernApp(tk.Tk):
             if config.get('default_printer_id') is not None:
                 for item in self.printer_tree.get_children():
                     values = self.printer_tree.item(item, "values")
-                    if values and len(values) >= 5 and int(values[4]) == config.get('default_printer_id'):
+                    if values and len(values) >= 6 and int(values[5]) == config.get('default_printer_id'):
                         self.printer_tree.selection_set(item)
                         self.printer_tree.see(item)
                         self.selected_printer_id = config.get('default_printer_id')
@@ -507,8 +513,8 @@ class ModernApp(tk.Tk):
         if selected_items:
             item_id = selected_items[0]
             values = self.printer_tree.item(item_id, "values")
-            if values and len(values) >= 5:
-                self.selected_printer_id = int(values[4])
+            if values and len(values) >= 6:
+                self.selected_printer_id = int(values[5])
     
     def show_settings(self):
         """Afficher la page des paramètres"""
@@ -564,11 +570,18 @@ class ModernApp(tk.Tk):
         encoding_label = ttk.Label(encoding_frame, text="Encodage par défaut:", style="Card.TLabel")
         encoding_label.pack(side=tk.LEFT, padx=(0, 10))
         
-        self.encoding_var = tk.StringVar(value=config.get('default_encoding', 'utf-8'))
+        self.encoding_var = tk.StringVar(value=config.get('default_encoding', 'auto'))
         encoding_combo = ttk.Combobox(encoding_frame, textvariable=self.encoding_var, 
-                                    values=["utf-8", "cp850", "cp437", "ascii"], 
+                                    values=["auto", "ascii", "cp1252", "cp850", "cp437", "latin1", "utf-8"], 
                                     width=10, state="readonly")
         encoding_combo.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Info sur l'encodage automatique
+        encoding_info = ttk.Label(encoding_frame, 
+                                text="(auto = ASCII pour POS-58, cp1252 pour autres)", 
+                                style="Card.TLabel", 
+                                font=self.font_small)
+        encoding_info.pack(side=tk.LEFT, padx=(10, 0))
         
         # URL de l'API
         url_frame = ttk.Frame(settings_frame, style="Card.TFrame")
@@ -806,10 +819,13 @@ class ModernApp(tk.Tk):
         # Rechercher le nom et la largeur de l'imprimante
         printer_name = None
         printer_width = "58mm"  # Valeur par défaut
+        printer_encoding = "cp1252"  # Valeur par défaut
+        
         for printer in self.printers:
             if printer['id'] == self.selected_printer_id:
                 printer_name = printer['name']
                 printer_width = printer.get('width', "58mm")  # Récupérer la largeur détectée
+                printer_encoding = printer.get('encoding', "cp1252")  # Récupérer l'encodage détecté
                 break
         
         if not printer_name:
@@ -833,10 +849,11 @@ class ModernApp(tk.Tk):
             # Recréer le tableau de bord pour montrer l'imprimante par défaut mise à jour
             self.show_dashboard()
         
-        # Afficher un message avec la largeur détectée
+        # Afficher un message avec la largeur et l'encodage détectés
         messagebox.showinfo("Imprimante par défaut", 
                           f"{printer_name} définie comme imprimante par défaut.\n"
-                          f"Largeur détectée: {printer_width}")
+                          f"Largeur détectée: {printer_width}\n"
+                          f"Encodage optimal: {printer_encoding}")
     
     def apply_port_setting(self):
         """Appliquer le changement de port"""
