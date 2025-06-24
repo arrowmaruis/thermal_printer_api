@@ -4,6 +4,7 @@
 """
 Interface graphique moderne pour l'API d'impression thermique
 Thème sombre inspiré des interfaces modernes d'applications web
+MISE À JOUR: Support ASCII universel pour toutes les imprimantes
 """
 
 import os
@@ -52,7 +53,7 @@ class ModernApp(tk.Tk):
         super().__init__()
         
         # Configuration de la fenêtre principale
-        self.title("Thermal Printer Dashboard")
+        self.title("Thermal Printer Dashboard - ASCII Universel")
         self.geometry("1000x650")
         self.minsize(900, 600)
         self.configure(bg=DARK_BG)
@@ -264,6 +265,12 @@ class ModernApp(tk.Tk):
                            font=self.font_heading)
         logo_text.pack(side=tk.LEFT)
         
+        # Badge ASCII universel
+        ascii_badge = ttk.Label(logo_frame, text="ASCII", 
+                             style="Secondary.TLabel",
+                             font=self.font_small)
+        ascii_badge.pack(side=tk.LEFT, padx=(5, 0))
+        
         # Créer les boutons de menu
         self.create_menu()
         
@@ -274,7 +281,7 @@ class ModernApp(tk.Tk):
         system_frame = ttk.Frame(self.sidebar, style="Sidebar.TFrame")
         system_frame.pack(fill=tk.X, padx=10, pady=10, side=tk.BOTTOM)
         
-        system_label = ttk.Label(system_frame, text="Version 1.0.0", 
+        system_label = ttk.Label(system_frame, text="Version 1.0.0 - ASCII", 
                               style="Secondary.TLabel")
         system_label.pack(anchor=tk.W)
         
@@ -298,7 +305,7 @@ class ModernApp(tk.Tk):
         self.greeting_label.pack(anchor=tk.W)
         
         self.subgreeting_label = ttk.Label(self.header_frame, 
-                                        text="voici votre tableau de bord d'impression.",
+                                        text="voici votre tableau de bord d'impression ASCII universel.",
                                         style="Secondary.TLabel",
                                         font=self.font_subheading)
         self.subgreeting_label.pack(anchor=tk.W)
@@ -343,12 +350,12 @@ class ModernApp(tk.Tk):
             widget.destroy()
     
     def show_dashboard(self):
-        """Afficher la page du tableau de bord"""
+        """Afficher la page du tableau de bord - MISE À JOUR ASCII"""
         self.update_menu_selection("dashboard")
         self.clear_page_container()
         
         # Titre de la page
-        page_title = ttk.Label(self.page_container, text="Tableau de bord", 
+        page_title = ttk.Label(self.page_container, text="Tableau de bord - ASCII Universel", 
                             style="Heading.TLabel")
         page_title.pack(anchor=tk.W, pady=(0, 20))
         
@@ -369,10 +376,18 @@ class ModernApp(tk.Tk):
         
         self.create_stat_card(stats_frame, "Port API", config.get('port', 5789), 2)
         
-        # Nouvelle carte pour l'encodage
-        encoding_display = config.get('default_encoding', 'auto')
-        if encoding_display == 'auto':
-            encoding_display = 'auto (ASCII/cp1252)'
+        # MODIFIÉ: Carte pour l'encodage ASCII universel
+        encoding_display = "ASCII (universel)"
+        if config.get('force_ascii_for_all', True):
+            encoding_display = "ASCII pour toutes"
+        else:
+            # Fallback au cas où l'ancien système serait encore actif
+            current_encoding = config.get('default_encoding', 'ascii')
+            if current_encoding == 'ascii':
+                encoding_display = "ASCII (universel)"
+            else:
+                encoding_display = f"{current_encoding} → ASCII"
+        
         self.create_stat_card(stats_frame, "Encodage", encoding_display, 3)
         
         # Section des actions rapides
@@ -385,8 +400,8 @@ class ModernApp(tk.Tk):
         actions_frame.pack(fill=tk.X, pady=10)
         
         # Créer des cartes d'action
-        self.create_action_card(actions_frame, "Tester l'impression", 
-                              "Imprimer un ticket de test sur l'imprimante par défaut", 
+        self.create_action_card(actions_frame, "Tester l'impression ASCII", 
+                              "Imprimer un ticket de test avec conversion française automatique", 
                               self.test_default_printer, 0)
         
         self.create_action_card(actions_frame, "Ouvrir API dans le navigateur", 
@@ -403,7 +418,7 @@ class ModernApp(tk.Tk):
         self.clear_page_container()
         
         # Titre de la page
-        page_title = ttk.Label(self.page_container, text="Gestion des imprimantes", 
+        page_title = ttk.Label(self.page_container, text="Gestion des imprimantes - ASCII universel", 
                             style="Heading.TLabel")
         page_title.pack(anchor=tk.W, pady=(0, 20))
         
@@ -420,7 +435,7 @@ class ModernApp(tk.Tk):
                               style="TButton")
         refresh_btn.pack(side=tk.LEFT, padx=(0, 10))
         
-        test_btn = ttk.Button(buttons_frame, text="Tester", 
+        test_btn = ttk.Button(buttons_frame, text="Tester ASCII", 
                            command=self.test_selected_printer,
                            style="Secondary.TButton")
         test_btn.pack(side=tk.LEFT, padx=(0, 10))
@@ -429,6 +444,13 @@ class ModernApp(tk.Tk):
                               command=self.set_default_printer,
                               style="Secondary.TButton")
         default_btn.pack(side=tk.LEFT)
+        
+        # Info ASCII
+        ascii_info = ttk.Label(buttons_frame, 
+                             text="🎯 Toutes les imprimantes utilisent l'encodage ASCII avec conversion française automatique", 
+                             style="Secondary.TLabel", 
+                             font=self.font_small)
+        ascii_info.pack(side=tk.RIGHT, padx=(10, 0))
         
         # Liste des imprimantes
         tree_frame = ttk.Frame(content_frame, style="Card.TFrame")
@@ -468,7 +490,7 @@ class ModernApp(tk.Tk):
         self.update_printer_list()
     
     def update_printer_list(self):
-        """Mettre à jour la liste des imprimantes dans la vue"""
+        """Mettre à jour la liste des imprimantes dans la vue - CORRIGÉ ASCII"""
         # Effacer la liste actuelle
         if hasattr(self, 'printer_tree'):
             for item in self.printer_tree.get_children():
@@ -483,9 +505,9 @@ class ModernApp(tk.Tk):
                 if printer['id'] == config.get('default_printer_id'):
                     status = "Par défaut"
                 
-                # Obtenir la largeur et l'encodage détectés
+                # MODIFIÉ: Obtenir la largeur et l'encodage (ASCII par défaut)
                 width = printer.get('width', '58mm')
-                encoding = printer.get('encoding', 'cp1252')
+                encoding = printer.get('encoding', 'ascii')  # ASCII par défaut maintenant
                 
                 # Ajouter à la liste avec l'ID caché à la fin des valeurs
                 values = (printer['name'], status, width, encoding, printer['port'], printer['id'])
@@ -517,12 +539,12 @@ class ModernApp(tk.Tk):
                 self.selected_printer_id = int(values[5])
     
     def show_settings(self):
-        """Afficher la page des paramètres"""
+        """Afficher la page des paramètres - MISE À JOUR ASCII"""
         self.update_menu_selection("settings")
         self.clear_page_container()
         
         # Titre de la page
-        page_title = ttk.Label(self.page_container, text="Paramètres", 
+        page_title = ttk.Label(self.page_container, text="Paramètres - ASCII universel", 
                             style="Heading.TLabel")
         page_title.pack(anchor=tk.W, pady=(0, 20))
         
@@ -563,25 +585,37 @@ class ModernApp(tk.Tk):
                              font=self.font_small)
         width_info.pack(side=tk.LEFT, padx=(10, 0))
         
-        # Encodage
+        # MODIFIÉ: Encodage ASCII universel
         encoding_frame = ttk.Frame(settings_frame, style="Card.TFrame")
         encoding_frame.pack(fill=tk.X, padx=20, pady=10)
         
-        encoding_label = ttk.Label(encoding_frame, text="Encodage par défaut:", style="Card.TLabel")
+        encoding_label = ttk.Label(encoding_frame, text="Encodage universel:", style="Card.TLabel")
         encoding_label.pack(side=tk.LEFT, padx=(0, 10))
         
-        self.encoding_var = tk.StringVar(value=config.get('default_encoding', 'auto'))
+        self.encoding_var = tk.StringVar(value=config.get('default_encoding', 'ascii'))
         encoding_combo = ttk.Combobox(encoding_frame, textvariable=self.encoding_var, 
-                                    values=["auto", "ascii", "cp1252", "cp850", "cp437", "latin1", "utf-8"], 
+                                    values=["ascii", "cp1252", "cp850", "cp437", "latin1"], 
                                     width=10, state="readonly")
         encoding_combo.pack(side=tk.LEFT, padx=(0, 10))
         
-        # Info sur l'encodage automatique
+        # MODIFIÉ: Info sur l'encodage ASCII universel
         encoding_info = ttk.Label(encoding_frame, 
-                                text="(auto = ASCII pour POS-58, cp1252 pour autres)", 
+                                text="(ASCII avec conversion française: café → cafe, €15,50 → EUR15,50)", 
                                 style="Card.TLabel", 
                                 font=self.font_small)
         encoding_info.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # ASCII status
+        ascii_status_frame = ttk.Frame(settings_frame, style="Card.TFrame")
+        ascii_status_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        ascii_status_label = ttk.Label(ascii_status_frame, text="Mode ASCII universel:", style="Card.TLabel")
+        ascii_status_label.pack(side=tk.LEFT, padx=(0, 10))
+        
+        ascii_enabled = config.get('force_ascii_for_all', True)
+        ascii_status_text = "✅ Activé (toutes imprimantes)" if ascii_enabled else "❌ Désactivé"
+        ascii_status_display = ttk.Label(ascii_status_frame, text=ascii_status_text, style="Card.TLabel")
+        ascii_status_display.pack(side=tk.LEFT)
         
         # URL de l'API
         url_frame = ttk.Frame(settings_frame, style="Card.TFrame")
@@ -765,11 +799,11 @@ class ModernApp(tk.Tk):
             messagebox.showerror("Erreur", "Imprimante introuvable.")
     
     def test_printer_by_name(self, printer_name):
-        """Tester l'imprimante par son nom"""
+        """Tester l'imprimante par son nom - MISE À JOUR ASCII"""
         # Afficher un dialogue de progression
         progress_window = tk.Toplevel(self)
-        progress_window.title("Impression en cours")
-        progress_window.geometry("300x100")
+        progress_window.title("Impression ASCII en cours")
+        progress_window.geometry("350x120")
         progress_window.configure(bg=DARK_BG)
         progress_window.resizable(False, False)
         progress_window.transient(self)
@@ -784,9 +818,13 @@ class ModernApp(tk.Tk):
         progress_window.geometry(f"{width}x{height}+{x}+{y}")
         
         # Contenu de la fenêtre
-        label = ttk.Label(progress_window, text=f"Impression sur {printer_name}...", 
+        label = ttk.Label(progress_window, text=f"Impression ASCII sur {printer_name}...", 
                         style="TLabel")
-        label.pack(pady=(20, 10))
+        label.pack(pady=(20, 5))
+        
+        ascii_label = ttk.Label(progress_window, text="Conversion française automatique", 
+                              style="Secondary.TLabel", font=self.font_small)
+        ascii_label.pack(pady=(0, 10))
         
         progress = ttk.Progressbar(progress_window, mode="indeterminate")
         progress.pack(fill=tk.X, padx=30)
@@ -801,8 +839,10 @@ class ModernApp(tk.Tk):
             
             # Afficher le résultat
             if success:
-                self.after(0, lambda: messagebox.showinfo("Test réussi", 
-                                                       f"Test d'impression envoyé à {printer_name}."))
+                self.after(0, lambda: messagebox.showinfo("Test ASCII réussi", 
+                                                       f"Test d'impression ASCII envoyé à {printer_name}.\n"
+                                                       f"Conversion française appliquée automatiquement.\n"
+                                                       f"Vérifiez que les accents sont correctement convertis."))
             else:
                 self.after(0, lambda: messagebox.showerror("Erreur", 
                                                         f"Échec du test d'impression sur {printer_name}."))
@@ -810,7 +850,7 @@ class ModernApp(tk.Tk):
         threading.Thread(target=print_test_thread).start()
     
     def set_default_printer(self):
-        """Définir l'imprimante sélectionnée comme imprimante par défaut"""
+        """Définir l'imprimante sélectionnée comme imprimante par défaut - CORRIGÉ ASCII"""
         if self.selected_printer_id is None:
             messagebox.showwarning("Aucune sélection", 
                                  "Veuillez sélectionner une imprimante à définir par défaut.")
@@ -819,13 +859,13 @@ class ModernApp(tk.Tk):
         # Rechercher le nom et la largeur de l'imprimante
         printer_name = None
         printer_width = "58mm"  # Valeur par défaut
-        printer_encoding = "cp1252"  # Valeur par défaut
+        printer_encoding = "ascii"  # MODIFIÉ: ASCII par défaut maintenant
         
         for printer in self.printers:
             if printer['id'] == self.selected_printer_id:
                 printer_name = printer['name']
                 printer_width = printer.get('width', "58mm")  # Récupérer la largeur détectée
-                printer_encoding = printer.get('encoding', "cp1252")  # Récupérer l'encodage détecté
+                printer_encoding = printer.get('encoding', "ascii")  # MODIFIÉ: ASCII par défaut
                 break
         
         if not printer_name:
@@ -849,11 +889,12 @@ class ModernApp(tk.Tk):
             # Recréer le tableau de bord pour montrer l'imprimante par défaut mise à jour
             self.show_dashboard()
         
-        # Afficher un message avec la largeur et l'encodage détectés
+        # MODIFIÉ: Message avec ASCII par défaut
         messagebox.showinfo("Imprimante par défaut", 
                           f"{printer_name} définie comme imprimante par défaut.\n"
                           f"Largeur détectée: {printer_width}\n"
-                          f"Encodage optimal: {printer_encoding}")
+                          f"Encodage: {printer_encoding} (ASCII universel)\n"
+                          f"Conversion française automatique activée.")
     
     def apply_port_setting(self):
         """Appliquer le changement de port"""
@@ -878,16 +919,20 @@ class ModernApp(tk.Tk):
             messagebox.showerror("Erreur", "Veuillez entrer un numéro de port valide.")
     
     def save_all_settings(self):
-        """Enregistrer tous les paramètres"""
-        # Sauvegarder l'encodage
+        """Enregistrer tous les paramètres - MISE À JOUR ASCII"""
+        # Sauvegarder l'encodage (même si ASCII est forcé par défaut)
         config['default_encoding'] = self.encoding_var.get()
         
-        # Pas besoin de sauvegarder la largeur d'imprimante ici car elle est 
-        # automatiquement sauvegardée lors de la sélection d'une imprimante par défaut
+        # NOUVEAU: S'assurer que force_ascii_for_all est activé si ASCII est sélectionné
+        if self.encoding_var.get() == 'ascii':
+            config['force_ascii_for_all'] = True
+            config['pos58_encoding'] = 'ascii'
+            config['standard_encoding'] = 'ascii'
         
         save_config()
         messagebox.showinfo("Paramètres enregistrés", 
-                          "Tous les paramètres ont été enregistrés.")
+                          "Tous les paramètres ont été enregistrés.\n"
+                          "ASCII universel avec conversion française activé.")
     
     def open_browser(self):
         """Ouvrir l'API dans le navigateur"""
@@ -895,7 +940,7 @@ class ModernApp(tk.Tk):
         webbrowser.open(api_url)
 
 def launch_config_gui():
-    """Lance l'interface graphique moderne"""
+    """Lance l'interface graphique moderne avec support ASCII"""
     app = ModernApp()
     
     # Centrer la fenêtre

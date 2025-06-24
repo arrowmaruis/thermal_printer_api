@@ -21,6 +21,7 @@ ESC_FEED = b'\x1b\x64'  # Avancer le papier
 def get_codepage_command(encoding):
     """
     Retourne la commande ESC/POS pour définir la page de codes selon l'encodage
+    OPTIMISÉ POUR ASCII PAR DÉFAUT
     
     Args:
         encoding (str): Encodage souhaité
@@ -29,26 +30,27 @@ def get_codepage_command(encoding):
         bytes: Commande ESC/POS pour la page de codes
     """
     # Commandes ESC/POS pour changer les pages de codes
+    ESC_SET_CODEPAGE_PC437 = b'\x1b\x74\x00'      # ESC t 0  - PC437 USA (optimal pour ASCII)
     ESC_SET_CODEPAGE_WPC1252 = b'\x1b\x74\x10'    # ESC t 16 - Windows-1252 (cp1252)
     ESC_SET_CODEPAGE_PC858 = b'\x1b\x74\x13'      # ESC t 19 - PC858 avec €
     ESC_SET_CODEPAGE_PC850 = b'\x1b\x74\x02'      # ESC t 2  - PC850 Europe
-    ESC_SET_CODEPAGE_PC437 = b'\x1b\x74\x00'      # ESC t 0  - PC437 USA
     ESC_SET_CODEPAGE_LATIN1 = b'\x1b\x74\x03'     # ESC t 3  - ISO 8859-1
     
     # Table de correspondance encodage → commande ESC/POS
+    # ASCII utilise PC437 par défaut (le plus compatible)
     codepage_commands = {
-        'cp1252': ESC_SET_CODEPAGE_WPC1252,
-        'cp850': ESC_SET_CODEPAGE_PC850,
-        'cp858': ESC_SET_CODEPAGE_PC858,
-        'cp437': ESC_SET_CODEPAGE_PC437,
-        'latin1': ESC_SET_CODEPAGE_LATIN1,
-        'ascii': ESC_SET_CODEPAGE_PC437,        # ASCII utilise PC437 comme base
-        'auto': ESC_SET_CODEPAGE_WPC1252,       # Auto utilise WPC1252 par défaut
-        'utf-8': ESC_SET_CODEPAGE_WPC1252       # UTF-8 → WPC1252 pour compatibilité
+        'ascii': ESC_SET_CODEPAGE_PC437,        # ASCII → PC437 (optimal)
+        'cp437': ESC_SET_CODEPAGE_PC437,        # PC437 natif
+        'cp1252': ESC_SET_CODEPAGE_WPC1252,     # Windows-1252
+        'cp850': ESC_SET_CODEPAGE_PC850,        # PC850 Europe
+        'cp858': ESC_SET_CODEPAGE_PC858,        # PC858 avec €
+        'latin1': ESC_SET_CODEPAGE_LATIN1,      # ISO 8859-1
+        'auto': ESC_SET_CODEPAGE_PC437,         # Auto → PC437 (ASCII compatible)
+        'utf-8': ESC_SET_CODEPAGE_PC437         # UTF-8 → PC437 avec conversion ASCII
     }
     
-    # Retourner la commande appropriée
-    command = codepage_commands.get(encoding.lower(), ESC_SET_CODEPAGE_WPC1252)
+    # Retourner la commande appropriée (PC437 par défaut pour ASCII)
+    command = codepage_commands.get(encoding.lower(), ESC_SET_CODEPAGE_PC437)
     
     logger.debug(f"Page de codes pour encodage '{encoding}': {command.hex()}")
     return command
@@ -56,6 +58,7 @@ def get_codepage_command(encoding):
 def is_pos58_printer(printer_name):
     """
     Vérifie si l'imprimante est un modèle POS-58
+    (Fonction conservée pour compatibilité mais maintenant tout est en ASCII)
     """
     if not printer_name:
         return False
@@ -66,7 +69,7 @@ def is_pos58_printer(printer_name):
 def convert_french_to_ascii_smart(text):
     """
     Convertit intelligemment le français vers ASCII en préservant la lisibilité
-    Optimisé pour que les textes français restent parfaitement compréhensibles
+    FONCTION PRINCIPALE pour toutes les imprimantes maintenant
     """
     if not text:
         return text
@@ -199,57 +202,13 @@ def detect_printer_width(printer_name):
 
 def detect_printer_encoding(printer_name):
     """
-    Détecte l'encodage optimal pour une imprimante donnée
-    POS-58 → ASCII automatiquement, autres → selon détection
+    SIMPLIFIÉ: Retourne toujours ASCII pour TOUTES les imprimantes
     """
-    try:
-        # Règle 1: POS-58 → ASCII obligatoire (on sait que ça marche)
-        if is_pos58_printer(printer_name):
-            logger.info(f"Imprimante POS-58 détectée: {printer_name} → Encodage ASCII forcé (solution optimale)")
-            return "ascii"
-        
-        # Règle 2: Autres imprimantes → détection classique
-        hPrinter = win32print.OpenPrinter(printer_name)
-        try:
-            printer_info = win32print.GetPrinter(hPrinter, 2)
-            driver_name = printer_info.get('pDriverName', '').lower()
-            printer_name_lower = printer_name.lower()
-            
-            # Imprimantes connues pour supporter cp1252 (comme Word)
-            cp1252_keywords = ['epson', 'star', 'citizen', 'bixolon', 'custom', 'zebra']
-            
-            # Imprimantes nécessitant cp850 (Europe)
-            cp850_keywords = ['tm-t88', 'tm-t20', 'thermal', 'receipt', 'pos', 'tmu220']
-            
-            text_to_check = f"{printer_name_lower} {driver_name}"
-            
-            # Vérifier cp1252 en priorité (optimal pour français)
-            for keyword in cp1252_keywords:
-                if keyword in text_to_check:
-                    logger.info(f"Encodage cp1252 (Windows-1252) détecté pour {printer_name}")
-                    return "cp1252"
-            
-            # Puis cp850 (Europe occidentale)
-            for keyword in cp850_keywords:
-                if keyword in text_to_check:
-                    logger.info(f"Encodage cp850 détecté pour {printer_name}")
-                    return "cp850"
-            
-            # Par défaut cp1252 pour les imprimantes non-POS-58
-            logger.info(f"Utilisation de cp1252 par défaut pour {printer_name}")
-            return "cp1252"
-            
-        finally:
-            win32print.ClosePrinter(hPrinter)
-    except Exception as e:
-        logger.error(f"Erreur lors de la détection d'encodage pour {printer_name}: {e}")
-        # Fallback sécurisé
-        if is_pos58_printer(printer_name):
-            return "ascii"
-        return "cp1252"
+    logger.info(f"Configuration ASCII universelle: {printer_name} → Encodage ASCII (pour toutes les imprimantes)")
+    return "ascii"
 
 def get_printers():
-    """Récupère la liste des imprimantes avec détection automatique de largeur et encodage"""
+    """Récupère la liste des imprimantes avec détection automatique de largeur et encodage ASCII"""
     try:
         printer_info = win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | 
                                              win32print.PRINTER_ENUM_CONNECTIONS)
@@ -259,7 +218,7 @@ def get_printers():
             
             # Détection automatique
             printer_width = detect_printer_width(printer_name)
-            printer_encoding = detect_printer_encoding(printer_name)
+            printer_encoding = "ascii"  # ASCII pour toutes les imprimantes
             
             printers.append({
                 'id': i,
@@ -268,78 +227,44 @@ def get_printers():
                 'driver': printer[3],
                 'is_default': (printer_name == win32print.GetDefaultPrinter()),
                 'width': printer_width,
-                'encoding': printer_encoding
+                'encoding': printer_encoding  # Toujours ASCII
             })
+        
+        logger.info(f"{len(printers)} imprimantes détectées avec encodage ASCII par défaut")
         return printers
     except Exception as e:
         logger.error(f"Erreur lors de la récupération des imprimantes: {e}")
         return []
 
-def safe_encode_french(text, encoding='auto', printer_name=None):
+def safe_encode_french(text, encoding='ascii', printer_name=None):
     """
-    Encodage sécurisé optimisé pour le français avec détection automatique intelligente
+    Encodage sécurisé optimisé pour ASCII par défaut
+    SIMPLIFIÉ: Utilise toujours la conversion ASCII intelligente
     
     Args:
         text (str): Texte à encoder
-        encoding (str): Encodage souhaité ('auto', 'ascii', 'cp1252', etc.)
-        printer_name (str): Nom de l'imprimante (pour détection automatique)
+        encoding (str): Encodage souhaité (ignoré si ASCII universel)
+        printer_name (str): Nom de l'imprimante (pour log)
     
     Returns:
-        bytes: Texte encodé de façon optimale
+        bytes: Texte encodé en ASCII avec conversion française intelligente
     """
     if not text:
         return b''
     
-    # Détection automatique de l'encodage optimal
-    if encoding == 'auto' or encoding is None:
-        if printer_name and is_pos58_printer(printer_name):
-            encoding = 'ascii'
-            logger.debug(f"Encodage automatique: POS-58 détectée → ASCII")
-        else:
-            encoding = 'cp1252'
-            logger.debug(f"Encodage automatique: autre imprimante → cp1252")
+    # NOUVEAU: ASCII universel par défaut
+    logger.debug(f"Encodage ASCII universel pour: {printer_name or 'imprimante'}")
     
-    # ASCII : conversion intelligente française
-    if encoding.lower() == 'ascii':
-        text_ascii = convert_french_to_ascii_smart(text)
-        try:
-            return text_ascii.encode('ascii', errors='strict')
-        except UnicodeEncodeError:
-            # Si même après conversion il y a des problèmes, forcer le remplacement
-            return text_ascii.encode('ascii', errors='replace')
+    # Conversion française intelligente
+    text_ascii = convert_french_to_ascii_smart(text)
     
-    # Autres encodages : système de fallback intelligent
-    encoding_priority = [
-        encoding,           # Encodage demandé en premier
-        'cp1252',          # Windows-1252 (comme Word) - excellent pour français
-        'cp850',           # CP850 - bon pour français
-        'latin1',          # ISO 8859-1 - compatible français
-        'cp437',           # CP437 - basique mais fonctionne
-        'ascii'            # ASCII avec conversion - dernier recours
-    ]
-    
-    # Supprimer les doublons en gardant l'ordre
-    seen = set()
-    encoding_priority = [x for x in encoding_priority if not (x in seen or seen.add(x))]
-    
-    for enc in encoding_priority:
-        try:
-            if enc == 'ascii':
-                # Dernier recours : ASCII avec conversion
-                text_converted = convert_french_to_ascii_smart(text)
-                return text_converted.encode('ascii', errors='replace')
-            else:
-                # Essayer l'encodage tel quel
-                return text.encode(enc, errors='strict')
-                
-        except (UnicodeEncodeError, LookupError):
-            logger.debug(f"Échec encodage {enc} pour: '{text[:30]}...'")
-            continue
-    
-    # Si vraiment tout échoue, ASCII forcé
-    logger.warning(f"Tous les encodages ont échoué pour '{text[:30]}...', utilisation ASCII forcé")
-    text_fallback = convert_french_to_ascii_smart(text)
-    return text_fallback.encode('ascii', errors='replace')
+    # Encoder en ASCII avec gestion d'erreurs robuste
+    try:
+        return text_ascii.encode('ascii', errors='strict')
+    except UnicodeEncodeError:
+        # Si même après conversion il y a des problèmes, forcer le remplacement
+        logger.warning(f"Caractères ASCII problématiques dans: '{text[:30]}...', remplacement forcé")
+        return text_ascii.encode('ascii', errors='replace')
 
 def print_raw(printer_name, data):
     """Imprime des données brutes sur l'imprimante spécifiée"""
@@ -362,13 +287,16 @@ def print_raw(printer_name, data):
         return False
 
 def print_test(printer_name):
-    """Imprime un ticket de test optimisé selon le type d'imprimante"""
+    """Imprime un ticket de test optimisé avec conversion ASCII pour toutes les imprimantes"""
     commands = bytearray()
     commands.extend(ESC_INIT)
     
     # Détection automatique des caractéristiques
     printer_width = detect_printer_width(printer_name)
-    encoding = detect_printer_encoding(printer_name)
+    encoding = "ascii"  # ASCII pour tout maintenant
+    
+    # Utiliser PC437 pour ASCII (optimal)
+    commands.extend(get_codepage_command(encoding))
     
     commands.extend(ESC_CENTER)
     commands.extend(ESC_BOLD_ON)
@@ -384,32 +312,23 @@ def print_test(printer_name):
     commands.extend(b'\n')
     commands.extend(safe_encode_french(f"Type: {printer_width}", encoding, printer_name))
     commands.extend(b'\n')
-    commands.extend(safe_encode_french(f"Encodage: {encoding}", encoding, printer_name))
+    commands.extend(safe_encode_french(f"Encodage: {encoding} (ASCII universel)", encoding, printer_name))
     commands.extend(b'\n')
     commands.extend(safe_encode_french(f"Date: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", encoding, printer_name))
     commands.extend(b'\n\n')
     
-    # Test spécifique selon l'encodage
-    if encoding == 'ascii':
-        commands.extend(safe_encode_french("=== TEST FRANÇAIS → ASCII ===", encoding, printer_name))
-        commands.extend(b'\n')
-        test_phrases = [
-            "Café français → Cafe francais",
-            "Hôtel de luxe → Hotel de luxe", 
-            "Réservation → Reservation",
-            "À bientôt → A bientot",
-            "François → Francois"
-        ]
-    else:
-        commands.extend(safe_encode_french("=== TEST CARACTÈRES FRANÇAIS ===", encoding, printer_name))
-        commands.extend(b'\n')
-        test_phrases = [
-            "Café français: éèàùç",
-            "Hôtel de luxe avec piscine",
-            "Réservation confirmée",
-            "François et Amélie",
-            "Prix: 15,50€ (quinze euros cinquante)"
-        ]
+    # Test de conversion française vers ASCII pour TOUTES les imprimantes
+    commands.extend(safe_encode_french("=== TEST FRANÇAIS → ASCII ===", encoding, printer_name))
+    commands.extend(b'\n')
+    test_phrases = [
+        "Café français → Cafe francais",
+        "Hôtel de luxe → Hotel de luxe", 
+        "Réservation → Reservation",
+        "À bientôt → A bientot",
+        "François → Francois",
+        "15,50€ → 15,50 EUR",
+        "Crème brûlée → Creme brulee"
+    ]
     
     for phrase in test_phrases:
         commands.extend(safe_encode_french(phrase, encoding, printer_name))
@@ -417,7 +336,7 @@ def print_test(printer_name):
     
     commands.extend(b'\n')
     commands.extend(ESC_CENTER)
-    commands.extend(safe_encode_french("*** FIN DU TEST ***", encoding, printer_name))
+    commands.extend(safe_encode_french("*** ASCII UNIVERSEL - TEST OK ***", encoding, printer_name))
     commands.extend(b'\n\n\n')
     commands.extend(ESC_CUT)
     
@@ -426,7 +345,7 @@ def print_test(printer_name):
 def test_all_encodings_on_printer(printer_name):
     """
     Teste tous les encodages disponibles sur une imprimante spécifique
-    Utile pour déterminer le meilleur encodage pour une imprimante
+    MODIFIÉ: Met l'accent sur ASCII comme recommandation
     
     Args:
         printer_name (str): Nom de l'imprimante à tester
@@ -435,37 +354,28 @@ def test_all_encodings_on_printer(printer_name):
         dict: Résultats des tests par encodage
     """
     test_phrase = "Café français: éèàùç € 15,50"
-    encodings_to_test = ['auto', 'ascii', 'cp1252', 'cp850', 'cp437', 'latin1']
+    encodings_to_test = ['ascii', 'cp1252', 'cp850', 'cp437', 'latin1']  # ASCII en premier
     results = {}
     
-    logger.info(f"Test de tous les encodages sur {printer_name}")
+    logger.info(f"Test de tous les encodages sur {printer_name} (ASCII recommandé)")
     
     for encoding in encodings_to_test:
         try:
-            # Tester l'encodage
-            if encoding == 'auto':
-                actual_encoding = detect_printer_encoding(printer_name)
-                encoded_text = safe_encode_french(test_phrase, actual_encoding, printer_name)
-                results[encoding] = {
-                    'success': True,
-                    'actual_encoding': actual_encoding,
-                    'encoded_length': len(encoded_text),
-                    'sample': encoded_text[:50].decode('ascii', errors='replace')
-                }
-            else:
-                encoded_text = safe_encode_french(test_phrase, encoding, printer_name)
-                results[encoding] = {
-                    'success': True,
-                    'actual_encoding': encoding,
-                    'encoded_length': len(encoded_text),
-                    'sample': encoded_text[:50].decode('ascii', errors='replace')
-                }
+            encoded_text = safe_encode_french(test_phrase, encoding, printer_name)
+            results[encoding] = {
+                'success': True,
+                'actual_encoding': encoding,
+                'encoded_length': len(encoded_text),
+                'sample': encoded_text[:50].decode('ascii', errors='replace'),
+                'recommended': encoding == 'ascii'  # Marquer ASCII comme recommandé
+            }
                 
         except Exception as e:
             results[encoding] = {
                 'success': False,
                 'error': str(e),
-                'actual_encoding': encoding
+                'actual_encoding': encoding,
+                'recommended': False
             }
     
     return results
@@ -481,18 +391,17 @@ def print_encoding_test_results(printer_name):
     
     for encoding, result in results.items():
         if result['success']:
-            print(f"✅ {encoding:<8} → {result['actual_encoding']:<8} ({result['encoded_length']} bytes)")
+            recommended = " ⭐ RECOMMANDÉ" if result.get('recommended') else ""
+            print(f"✅ {encoding:<8} → {result['actual_encoding']:<8} ({result['encoded_length']} bytes){recommended}")
             print(f"   Aperçu: {result['sample']}")
         else:
             print(f"❌ {encoding:<8} → ÉCHEC: {result['error']}")
         print()
     
-    # Recommandation
-    is_pos58 = is_pos58_printer(printer_name)
-    if is_pos58:
-        print("🎯 RECOMMANDATION: Cette imprimante POS-58 doit utiliser 'ascii'")
-    else:
-        print("🎯 RECOMMANDATION: Cette imprimante peut utiliser 'cp1252' ou 'auto'")
+    # Recommandation universelle
+    print("🎯 RECOMMANDATION: ASCII est maintenant l'encodage universel pour toutes les imprimantes")
+    print("   → Conversion française automatique: café → cafe, hôtel → hotel")
+    print("   → Symboles: 15,50€ → 15,50 EUR")
     
     return results
 
@@ -508,8 +417,8 @@ def test_french_conversion():
         "Menu spécial: entrée, plat, dessert"
     ]
     
-    print("🧪 TEST CONVERSION FRANÇAIS → ASCII")
-    print("=" * 50)
+    print("🧪 TEST CONVERSION FRANÇAIS → ASCII (UNIVERSEL)")
+    print("=" * 55)
     
     for phrase in test_phrases:
         ascii_result = convert_french_to_ascii_smart(phrase)
