@@ -3,8 +3,117 @@
 
 import win32print
 import unicodedata
+import base64
+import io
 from datetime import datetime
 from utils.config import logger
+
+
+# ---------------------------------------------------------------------------
+# Conversion image → ESC/POS raster (GS v 0)
+# ---------------------------------------------------------------------------
+
+def image_to_escpos(image_source, max_width_px=384, align='center'):
+    """
+    Convertit une image en commandes ESC/POS raster (GS v 0).
+    Compatible avec toutes les imprimantes thermiques ESC/POS.
+
+    Largeurs papier conseillees :
+      58mm → max_width_px=384  (environ 200-250 pour un beau logo)
+      80mm → max_width_px=576
+
+    Args:
+        image_source: chemin fichier (str), bytes bruts, ou base64 (str)
+        max_width_px (int): largeur maximale en pixels
+        align (str): 'left', 'center', 'right'
+
+    Returns:
+        bytes: commandes ESC/POS prete a envoyer
+        None : si la conversion echoue
+    """
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        logger.error("Pillow non installe: pip install pillow")
+        return None
+
+    try:
+        # --- Charger l'image ---
+        if isinstance(image_source, str):
+            try:
+                img_bytes = base64.b64decode(image_source)
+                img = Image.open(io.BytesIO(img_bytes))
+            except Exception:
+                img = Image.open(image_source)
+        elif isinstance(image_source, bytes):
+            try:
+                img_bytes = base64.b64decode(image_source)
+                img = Image.open(io.BytesIO(img_bytes))
+            except Exception:
+                img = Image.open(io.BytesIO(image_source))
+        else:
+            logger.error("image_source invalide")
+            return None
+
+        # --- Convertir en noir et blanc ---
+        # Fond blanc pour les PNG transparents
+        if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+            background = Image.new('RGBA', img.size, (255, 255, 255, 255))
+            background.paste(img.convert('RGBA'), mask=img.convert('RGBA').split()[3])
+            img = background.convert('L')
+        else:
+            img = img.convert('L')
+
+        img = ImageOps.invert(img)  # blanc=vide, noir=encre
+        img = img.convert('1')      # 1-bit
+
+        # --- Redimensionner si necessaire ---
+        w, h = img.size
+        if w > max_width_px:
+            ratio = max_width_px / w
+            img = img.resize((max_width_px, int(h * ratio)), Image.LANCZOS)
+            w, h = img.size
+
+        # La largeur doit etre un multiple de 8 (requis ESC/POS)
+        if w % 8 != 0:
+            new_w = ((w // 8) + 1) * 8
+            padded = Image.new('1', (new_w, h), 0)
+            padded.paste(img, (0, 0))
+            img = padded
+            w = new_w
+
+        # --- Construire les commandes ESC/POS ---
+        commands = bytearray()
+
+        # Alignement
+        if align == 'center':
+            commands.extend(b'\x1b\x61\x01')
+        elif align == 'right':
+            commands.extend(b'\x1b\x61\x02')
+        else:
+            commands.extend(b'\x1b\x61\x00')
+
+        # GS v 0 : impression raster
+        bytes_per_row = w // 8
+        xL = bytes_per_row & 0xFF
+        xH = (bytes_per_row >> 8) & 0xFF
+        yL = h & 0xFF
+        yH = (h >> 8) & 0xFF
+
+        commands.extend(b'\x1d\x76\x30\x00')
+        commands.extend(bytes([xL, xH, yL, yH]))
+        commands.extend(img.tobytes())
+
+        # Retour alignement gauche + saut de ligne
+        commands.extend(b'\x1b\x61\x00')
+        commands.extend(b'\n')
+
+        logger.info(f"Logo converti: {w}x{h}px, {bytes_per_row * h} bytes raster")
+        return bytes(commands)
+
+    except Exception as e:
+        logger.error(f"Erreur conversion image ESC/POS: {e}")
+        return None
 
 # Commandes ESC/POS de base
 ESC_INIT = b'\x1b\x40'  # Initialiser l'imprimante

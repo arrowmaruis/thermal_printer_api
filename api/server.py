@@ -203,7 +203,7 @@ def validate_print_request(data):
             if not isinstance(sections, list):
                 errors.append("'data.sections' doit être une liste")
             else:
-                valid_types = {'header', 'text', 'separator', 'keyvalue', 'table', 'feed', 'cut'}
+                valid_types = {'header', 'text', 'separator', 'keyvalue', 'table', 'feed', 'cut', 'logo'}
                 for i, section in enumerate(sections):
                     if not isinstance(section, dict):
                         errors.append(f"Section {i}: doit être un objet JSON")
@@ -218,6 +218,8 @@ def validate_print_request(data):
                             errors.append(f"Section {i} (table): 'rows' manquant")
                     if sec_type == 'keyvalue' and 'rows' not in section:
                         errors.append(f"Section {i} (keyvalue): 'rows' manquant")
+                    if sec_type == 'logo' and not section.get('image') and not section.get('path'):
+                        errors.append(f"Section {i} (logo): champ 'image' (base64) ou 'path' requis")
             return errors
 
         # ── Mode classique : valider les items ─────────────────────────────

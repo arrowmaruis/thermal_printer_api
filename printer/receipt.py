@@ -6,7 +6,7 @@ from printer.printer_utils import (
     ESC_INIT, ESC_BOLD_ON, ESC_BOLD_OFF, ESC_DOUBLE_HEIGHT_ON,
     ESC_DOUBLE_HEIGHT_OFF, ESC_CENTER, ESC_LEFT, ESC_RIGHT, ESC_CUT,
     get_codepage_command, safe_encode_french, detect_printer_encoding, is_pos58_printer,
-    get_robust_cut_command, get_robust_init_command
+    get_robust_cut_command, get_robust_init_command, image_to_escpos
 )
 
 
@@ -162,12 +162,47 @@ def _render_table_section(commands, section, max_width, encode_text, currency, d
         commands.extend(b'\n')
 
 
-def _render_section(commands, section, max_width, encode_text, currency, decimals):
+def _render_logo_section(commands, section, max_width, printer_width):
+    """
+    Rend une section 'logo' — imprime une image en ESC/POS raster.
+
+    Parametres de la section :
+      image  (str) : image en base64 OU chemin vers un fichier sur le serveur
+      align  (str) : 'left' | 'center' | 'right'  (defaut: 'center')
+      width  (int) : largeur cible en pixels (defaut: adapte au papier)
+    """
+    image_source = section.get('image') or section.get('path')
+    if not image_source:
+        logger.warning("Section logo : champ 'image' ou 'path' manquant")
+        return
+
+    align = section.get('align', 'center')
+
+    # Largeur max selon le papier
+    if printer_width == '80mm':
+        default_max_px = 512
+    else:
+        default_max_px = 300  # conservateur pour 58mm
+
+    max_px = int(section.get('width', default_max_px))
+
+    logo_bytes = image_to_escpos(image_source, max_width_px=max_px, align=align)
+    if logo_bytes:
+        commands.extend(logo_bytes)
+    else:
+        logger.warning("Conversion logo echouee — section ignoree")
+
+
+def _render_section(commands, section, max_width, encode_text, currency, decimals,
+                    printer_width='58mm'):
     """Dispatch vers le bon renderer selon le type de section"""
     sec_type = section.get('type', 'text')
 
     if sec_type in ('header', 'text'):
         _render_text_section(commands, section, max_width, encode_text)
+
+    elif sec_type == 'logo':
+        _render_logo_section(commands, section, max_width, printer_width)
 
     elif sec_type == 'separator':
         char = str(section.get('char', '-'))
@@ -191,7 +226,8 @@ def _render_section(commands, section, max_width, encode_text, currency, decimal
         logger.warning(f"Type de section inconnu: {sec_type}")
 
 
-def format_dynamic_content(commands, receipt_data, max_width, encode_text, currency, decimals, printer_name):
+def format_dynamic_content(commands, receipt_data, max_width, encode_text, currency, decimals,
+                           printer_name, printer_width='58mm'):
     """
     Moteur de rendu dynamique.
     Parcourt le tableau 'sections' et rend chaque section dans l'ordre.
@@ -199,7 +235,8 @@ def format_dynamic_content(commands, receipt_data, max_width, encode_text, curre
     sections = receipt_data.get('sections', [])
     for section in sections:
         try:
-            _render_section(commands, section, max_width, encode_text, currency, decimals)
+            _render_section(commands, section, max_width, encode_text, currency, decimals,
+                            printer_width)
         except Exception as e:
             logger.error(f"Erreur section '{section.get('type', '?')}': {e}")
 
@@ -258,7 +295,8 @@ def format_receipt(receipt_data, receipt_type="standard", printer_width=None, en
 
         # ── Mode dynamique ──────────────────────────────────────────────────
         if 'sections' in receipt_data:
-            format_dynamic_content(commands, receipt_data, MAX_WIDTH, encode_text, currency, decimals, printer_name)
+            format_dynamic_content(commands, receipt_data, MAX_WIDTH, encode_text, currency, decimals,
+                                   printer_name, printer_width)
 
             # Coupe finale sauf si une section 'cut' est déjà présente
             has_explicit_cut = any(s.get('type') == 'cut' for s in receipt_data.get('sections', []))
