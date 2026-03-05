@@ -259,13 +259,79 @@ X-API-Key: votre_cle_api
 
 | Type | Parametres |
 |---|---|
+| `logo` | `image` (base64), `path` (chemin serveur), `align`, `width` |
 | `header` | `text`, `align` |
 | `text` | `text`, `align`, `bold`, `size` (`normal`/`double`) |
-| `separator` | *(aucun)* |
-| `keyvalue` | `rows: [{key, value}]` |
-| `table` | `columns: [...]`, `rows: [[...]]` |
+| `separator` | `char` (defaut: `-`) |
+| `keyvalue` | `rows: [{key, value}]`, `bold`, `key_width` |
+| `table` | `columns: [...]`, `rows: [[...]]`, `show_header`, `separator` |
 | `feed` | `lines` (nombre de lignes a avancer) |
 | `cut` | *(aucun)* |
+
+---
+
+### POST /print — Impression avec logo
+
+Le logo doit etre envoye en **base64** ou via un chemin de fichier sur le serveur.
+
+```json
+{
+  "printer_id": 0,
+  "type": "receipt",
+  "printer_width": "58mm",
+  "data": {
+    "sections": [
+      {
+        "type": "logo",
+        "image": "iVBORw0KGgoAAAANSUhEUgAA...",
+        "align": "center",
+        "width": 250
+      },
+      { "type": "feed", "lines": 1 },
+      { "type": "header", "text": "Hotel Luxe" },
+      { "type": "separator" },
+      { "type": "text", "text": "Merci de votre visite", "align": "center" },
+      { "type": "cut" }
+    ]
+  }
+}
+```
+
+**Parametres de la section `logo` :**
+
+| Champ | Requis | Description |
+|---|---|---|
+| `image` | Oui* | Image encodee en **base64** (PNG, JPG, BMP) |
+| `path` | Oui* | OU chemin fichier sur le serveur (`logo.png`) |
+| `align` | Non | `center` (defaut), `left`, `right` |
+| `width` | Non | Largeur cible en pixels (defaut: 300px pour 58mm, 512px pour 80mm) |
+
+*`image` ou `path` — l'un des deux est requis.
+
+**Convertir une image en base64 (JavaScript) :**
+```js
+// Depuis un fichier input
+const file = document.querySelector('input[type=file]').files[0];
+const reader = new FileReader();
+reader.onload = e => {
+  const base64 = e.target.result.split(',')[1]; // supprimer le prefixe data:image/...
+  // envoyer base64 dans le champ "image"
+};
+reader.readAsDataURL(file);
+```
+
+**Convertir une image en base64 (Python) :**
+```python
+import base64
+with open('logo.png', 'rb') as f:
+    base64_logo = base64.b64encode(f.read()).decode('utf-8')
+```
+
+**Conseils pour un bon rendu :**
+- Utiliser un logo en **noir et blanc** ou avec fort contraste
+- Format **PNG avec fond transparent** : ideal (le fond devient blanc automatiquement)
+- Largeur recommandee : **200-300px** pour 58mm, **300-500px** pour 80mm
+- Eviter les logos trop fins (traits fins peuvent disparaitre apres conversion 1-bit)
 
 ---
 
