@@ -211,34 +211,99 @@ def detect_printer_encoding(printer_name):
     logger.info(f"Configuration ASCII universelle: {printer_name} → Encodage ASCII (pour toutes les imprimantes)")
     return "ascii"
 
+def _detect_connection_type(port_name):
+    """Determine le type de connexion a partir du nom de port Windows."""
+    if not port_name:
+        return 'unknown'
+    p = port_name.upper()
+    if p.startswith('USB') or 'USBPRINT' in p:
+        return 'usb'
+    if p.startswith('COM') or p.startswith('BT') or 'BLUETOOTH' in p or 'RFCOMM' in p:
+        return 'bluetooth_com'
+    if p.startswith('IP_') or p.startswith('WSD') or '.' in port_name:
+        return 'network'
+    if p.startswith('LPT'):
+        return 'parallel'
+    return 'usb'  # par defaut (ex: port PDF, XPS...)
+
+
 def get_printers():
-    """Récupère la liste des imprimantes avec détection automatique de largeur et encodage ASCII"""
+    """
+    Recupere la liste COMPLETE des imprimantes :
+      - Imprimantes Windows (USB, BT avec driver, reseau) via win32print
+      - Imprimantes BT sur port COM non enregistrees dans le spouleur
+    Chaque entree contient 'connection_type' : 'usb', 'bluetooth_com', 'bluetooth_spooler', 'network'
+    """
+    printers = []
+    spooler_com_ports = set()  # ports COM deja couverts par le spouleur
+
+    # --- 1. Imprimantes Windows (spouleur) ---
     try:
-        printer_info = win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | 
-                                             win32print.PRINTER_ENUM_CONNECTIONS)
-        printers = []
+        printer_info = win32print.EnumPrinters(
+            win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
+        )
+        try:
+            default_name = win32print.GetDefaultPrinter()
+        except Exception:
+            default_name = ''
+
         for i, printer in enumerate(printer_info):
             printer_name = printer[2]
-            
-            # Détection automatique
+            port = printer[1]
+            conn_type = _detect_connection_type(port)
+
+            # BT avec driver installe = 'bluetooth_spooler'
+            if conn_type == 'bluetooth_com':
+                conn_type = 'bluetooth_spooler'
+                spooler_com_ports.add(port.upper())
+
             printer_width = detect_printer_width(printer_name)
-            printer_encoding = "ascii"  # ASCII pour toutes les imprimantes
-            
+
             printers.append({
                 'id': i,
                 'name': printer_name,
-                'port': printer[1],
+                'port': port,
                 'driver': printer[3],
-                'is_default': (printer_name == win32print.GetDefaultPrinter()),
+                'is_default': (printer_name == default_name),
                 'width': printer_width,
-                'encoding': printer_encoding  # Toujours ASCII
+                'encoding': 'ascii',
+                'connection_type': conn_type,
             })
-        
-        logger.info(f"{len(printers)} imprimantes détectées avec encodage ASCII par défaut")
-        return printers
+
+        logger.info(f"{len(printers)} imprimantes spouleur detectees")
     except Exception as e:
-        logger.error(f"Erreur lors de la récupération des imprimantes: {e}")
-        return []
+        logger.error(f"Erreur enumeration imprimantes Windows: {e}")
+
+    # --- 2. Ports COM Bluetooth non enregistres dans le spouleur ---
+    try:
+        import serial.tools.list_ports
+        for p in serial.tools.list_ports.comports():
+            desc = (p.description or '').lower()
+            hwid = (p.hwid or '').lower()
+            is_bt = 'bluetooth' in desc or 'bth' in hwid or 'rfcomm' in desc
+            if not is_bt:
+                continue
+            if p.device.upper() in spooler_com_ports:
+                continue  # deja dans la liste spouleur
+            printers.append({
+                'id': len(printers),
+                'name': p.description or p.device,
+                'port': p.device,
+                'driver': '',
+                'is_default': False,
+                'width': '58mm',
+                'encoding': 'ascii',
+                'connection_type': 'bluetooth_com',
+                'com_port': p.device,
+            })
+            logger.info(f"Port COM Bluetooth ajoute: {p.device} ({p.description})")
+    except ImportError:
+        pass  # pyserial non installe, on ignore
+    except Exception as e:
+        logger.error(f"Erreur detection ports COM BT: {e}")
+
+    logger.info(f"{len(printers)} imprimantes totales (USB + Bluetooth + reseau)")
+    return printers
 
 def get_robust_init_command(printer_name=None):
     """
@@ -339,37 +404,67 @@ def safe_encode_french(text, encoding='ascii', printer_name=None):
         return text_ascii.encode('ascii', errors='replace')
 
 def print_raw(printer_name, data):
-    """Imprime des données brutes sur l'imprimante spécifiée avec flush forcé"""
+    """Imprime des donnees brutes via le spouleur Windows (USB, reseau, BT avec driver)."""
     try:
         hPrinter = win32print.OpenPrinter(printer_name)
         try:
-            # Utiliser un document avec flush immédiat
             hJob = win32print.StartDocPrinter(hPrinter, 1, ("Impression Hotelia", None, "RAW"))
             try:
                 win32print.StartPagePrinter(hPrinter)
-                
-                # Écrire les données
                 win32print.WritePrinter(hPrinter, data)
-                
-                # IMPORTANT: Forcer le flush immédiat après l'écriture
-                # Ceci garantit que la coupe s'exécute immédiatement
                 win32print.EndPagePrinter(hPrinter)
-                
             finally:
                 win32print.EndDocPrinter(hPrinter)
-                
         finally:
             win32print.ClosePrinter(hPrinter)
-            
-        # Attendre un court délai pour s'assurer que l'impression est terminée
+
         import time
-        time.sleep(0.1)  # 100ms pour laisser le temps à l'imprimante de traiter
-        
-        logger.info(f"Impression réussie sur {printer_name} avec flush forcé")
+        time.sleep(0.1)
+        logger.info(f"Impression reussie (spouleur) sur {printer_name}")
         return True
     except Exception as e:
-        logger.error(f"Erreur lors de l'impression: {e}")
+        logger.error(f"Erreur impression spouleur {printer_name}: {e}")
         return False
+
+
+def print_raw_com(com_port, data, baudrate=9600):
+    """Imprime des donnees brutes via un port COM (Bluetooth SPP, serie)."""
+    try:
+        import serial
+        with serial.Serial(com_port, baudrate=baudrate, timeout=5) as ser:
+            ser.write(data)
+            ser.flush()
+        logger.info(f"Impression reussie (COM) sur {com_port}")
+        return True
+    except ImportError:
+        logger.error("pyserial manquant: pip install pyserial")
+        return False
+    except Exception as e:
+        logger.error(f"Erreur impression COM {com_port}: {e}")
+        return False
+
+
+def print_smart(printer_info, data):
+    """
+    Route l'impression vers le bon canal selon connection_type :
+      - 'bluetooth_com' : envoie via port COM (pyserial)
+      - tous les autres  : envoie via le spouleur Windows (win32print)
+
+    Args:
+        printer_info (dict): Entree retournee par get_printers()
+        data (bytes): Donnees ESC/POS
+
+    Returns:
+        bool: True si succes
+    """
+    conn = printer_info.get('connection_type', 'usb')
+    if conn == 'bluetooth_com':
+        com_port = printer_info.get('com_port') or printer_info.get('port')
+        logger.info(f"Routage impression → Bluetooth COM {com_port}")
+        return print_raw_com(com_port, data)
+    else:
+        logger.info(f"Routage impression → spouleur Windows ({conn}): {printer_info['name']}")
+        return print_raw(printer_info['name'], data)
 
 def print_test(printer_name):
     """Imprime un ticket de test optimisé avec conversion ASCII pour toutes les imprimantes"""

@@ -11,7 +11,7 @@ from flask_cors import CORS
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.config import logger, config, HOST, PORT
-from printer.printer_utils import get_printers, print_raw, print_test, detect_printer_width, detect_printer_encoding
+from printer.printer_utils import get_printers, print_raw, print_smart, print_test, detect_printer_width, detect_printer_encoding
 from printer.receipt import format_receipt
 
 def create_static_content():
@@ -395,69 +395,54 @@ def create_app():
                     'message': f"Imprimante avec ID {printer_id} non trouvée"
                 }), 404
             
-            printer_name = printers[printer_id]['name']
-            
+            printer_info = printers[printer_id]
+            printer_name = printer_info['name']
+            conn_type = printer_info.get('connection_type', 'usb')
+
             # Récupérer ou détecter la largeur de l'imprimante
             printer_width = data.get('printer_width')
             if printer_width is None:
-                printer_width = printers[printer_id].get('width', 
+                printer_width = printer_info.get('width',
                                       config.get('default_printer_width', '58mm'))
-            
-            # NOUVEAU: Encodage ASCII universel (ignorer le paramètre encoding sauf si override explicite)
-            encoding = data.get('encoding')
-            if encoding is None or config.get('force_ascii_for_all', True):
-                encoding = 'ascii'  # ASCII universel
-                logger.info(f"Utilisation de l'encodage ASCII universel pour {printer_name}")
-            else:
-                logger.info(f"Encodage spécifique demandé: {encoding} pour {printer_name}")
-            
+
+            encoding = 'ascii'
+            logger.info(f"Impression sur {printer_name} ({conn_type}), largeur: {printer_width}")
+
             # Type d'impression
             print_type = data.get('type', 'receipt')
-            
+
             if print_type == 'receipt':
-                # Impression d'un reçu formaté avec ASCII universel
                 receipt_data = data.get('data', {})
-                receipt_type = data.get('receipt_type', 'standard')  # Types: standard, hotel, mixed
-                
-                logger.info(f"Formatage d'un reçu de type {receipt_type}")
-                logger.info(f"Imprimante: {printer_name}, largeur: {printer_width}, encodage: {encoding} (ASCII universel)")
-                
-                # Passer le nom de l'imprimante pour l'encodage ASCII
+                receipt_type = data.get('receipt_type', 'standard')
                 commands = format_receipt(
-                    receipt_data, 
-                    receipt_type, 
-                    printer_width, 
+                    receipt_data,
+                    receipt_type,
+                    printer_width,
                     encoding,
-                    printer_name  # Important pour la conversion ASCII
+                    printer_name
                 )
-                success = print_raw(printer_name, commands)
-                
+                success = print_smart(printer_info, commands)
+
             elif print_type == 'raw':
-                # Impression de texte brut avec ASCII universel
-                raw_text = data.get('text', '')
-                
-                # Utiliser la fonction d'encodage ASCII universel
                 from printer.printer_utils import safe_encode_french
-                encoded_text = safe_encode_french(raw_text, encoding, printer_name)
-                
-                success = print_raw(printer_name, encoded_text)
-                
+                encoded_text = safe_encode_french(data.get('text', ''), encoding, printer_name)
+                success = print_smart(printer_info, encoded_text)
+
             else:
                 return jsonify({
                     'status': 'error',
                     'message': f"Type d'impression '{print_type}' non pris en charge"
                 }), 400
-            
+
             if success:
                 return jsonify({
                     'status': 'success',
-                    'message': f"Données imprimées sur {printer_name}",
+                    'message': f"Donnees imprimees sur {printer_name}",
                     'printer_width': printer_width,
                     'encoding_used': encoding,
-                    'universal_ascii': True,                   # Nouveau flag
-                    'french_conversion': encoding == 'ascii',  # Conversion française activée
-                    'printer_type': 'Universal ASCII',         # Nouveau type
-                    'conversion_applied': True                 # Conversion appliquée
+                    'connection_type': conn_type,
+                    'universal_ascii': True,
+                    'conversion_applied': True,
                 })
             else:
                 return jsonify({
@@ -530,6 +515,154 @@ def create_app():
                 'allow_override': config.get('allow_encoding_override', True)
             }
         })
+
+    # -----------------------------------------------------------------------
+    # Endpoints Bluetooth
+    # -----------------------------------------------------------------------
+
+    @app.route('/bluetooth/ports')
+    def bluetooth_ports():
+        """Liste tous les ports COM disponibles (Bluetooth et serie)."""
+        from printer.bluetooth_utils import get_all_com_ports
+        ports = get_all_com_ports()
+        bt_ports = [p for p in ports if p['is_bluetooth']]
+        return jsonify({
+            'status': 'success',
+            'bluetooth_ports': bt_ports,
+            'all_ports': ports,
+            'count_bluetooth': len(bt_ports),
+            'count_total': len(ports),
+            'note': 'Appairez d\'abord l\'imprimante BT dans les parametres Windows'
+        })
+
+    @app.route('/bluetooth/discover')
+    def bluetooth_discover():
+        """
+        Scanne les appareils Bluetooth a portee (necessite pybluez).
+        Parametre optionnel: ?duration=8
+        """
+        from printer.bluetooth_utils import discover_bluetooth_devices
+        duration = request.args.get('duration', 8, type=int)
+        duration = max(3, min(duration, 30))  # entre 3 et 30 secondes
+        result = discover_bluetooth_devices(duration=duration)
+        if isinstance(result, dict) and 'error' in result:
+            return jsonify({
+                'status': 'error',
+                'message': result['error'],
+                'install': 'pip install pybluez'
+            }), 503
+        printers = [d for d in result if d.get('is_printer')]
+        return jsonify({
+            'status': 'success',
+            'devices': result,
+            'printers': printers,
+            'count': len(result),
+            'scan_duration': duration,
+        })
+
+    @app.route('/bluetooth/print', methods=['POST'])
+    def bluetooth_print():
+        """
+        Imprime via Bluetooth (COM ou socket).
+
+        Body JSON:
+          {
+            "connection": "com" | "socket",
+            "port": "COM3",            // si connection=com
+            "address": "AA:BB:CC:...", // si connection=socket
+            "rfcomm_port": 1,          // optionnel, defaut 1
+            "baudrate": 9600,          // optionnel, defaut 9600
+            "type": "receipt" | "raw",
+            "data": { ... },           // si type=receipt
+            "text": "...",             // si type=raw
+            "receipt_type": "standard",
+            "printer_width": "58mm"
+          }
+        """
+        from printer.bluetooth_utils import print_via_com_port, print_via_bluetooth_socket
+
+        try:
+            data = request.json
+            if not data:
+                return jsonify({'status': 'error', 'message': 'Aucune donnee recue'}), 400
+
+            connection = data.get('connection', 'com').lower()
+            print_type = data.get('type', 'receipt')
+            printer_width = data.get('printer_width', config.get('default_printer_width', '58mm'))
+            encoding = 'ascii'
+
+            # Construire les bytes a imprimer
+            if print_type == 'receipt':
+                receipt_data = data.get('data', {})
+                receipt_type = data.get('receipt_type', 'standard')
+                raw_bytes = format_receipt(receipt_data, receipt_type, printer_width, encoding, None)
+            elif print_type == 'raw':
+                from printer.printer_utils import safe_encode_french
+                raw_bytes = safe_encode_french(data.get('text', ''), encoding)
+            else:
+                return jsonify({'status': 'error',
+                                'message': f"Type '{print_type}' non supporte"}), 400
+
+            # Envoyer selon la methode de connexion
+            if connection == 'com':
+                port = data.get('port')
+                if not port:
+                    return jsonify({'status': 'error', 'message': "'port' requis pour connexion COM"}), 400
+                baudrate = data.get('baudrate', 9600)
+                success = print_via_com_port(port, raw_bytes, baudrate=baudrate)
+                target = port
+            elif connection == 'socket':
+                address = data.get('address')
+                if not address:
+                    return jsonify({'status': 'error', 'message': "'address' requis pour connexion socket"}), 400
+                rfcomm_port = data.get('rfcomm_port', 1)
+                success = print_via_bluetooth_socket(address, raw_bytes, rfcomm_port=rfcomm_port)
+                target = address
+            else:
+                return jsonify({'status': 'error',
+                                'message': f"Connexion '{connection}' inconnue. Utilisez 'com' ou 'socket'"}), 400
+
+            if success:
+                return jsonify({
+                    'status': 'success',
+                    'message': f"Impression Bluetooth OK vers {target}",
+                    'connection': connection,
+                    'target': target,
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f"Echec impression Bluetooth vers {target}"
+                }), 500
+
+        except Exception as e:
+            logger.error(f"Erreur impression Bluetooth: {e}")
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
+    @app.route('/bluetooth/test-com/<path:port>')
+    def bluetooth_test_com(port):
+        """Test d'impression via port COM Bluetooth (ex: /bluetooth/test-com/COM3)."""
+        from printer.bluetooth_utils import test_bluetooth_printer_com
+        success = test_bluetooth_printer_com(port)
+        if success:
+            return jsonify({'status': 'success', 'message': f"Test BT COM OK sur {port}", 'port': port})
+        return jsonify({'status': 'error', 'message': f"Echec test BT sur {port}"}), 500
+
+    @app.route('/bluetooth/test-socket/<path:address>')
+    def bluetooth_test_socket(address):
+        """
+        Test d'impression via socket Bluetooth (ex: /bluetooth/test-socket/AA:BB:CC:DD:EE:FF).
+        Parametre optionnel: ?rfcomm_port=1
+        """
+        from printer.bluetooth_utils import test_bluetooth_printer_socket
+        rfcomm_port = request.args.get('rfcomm_port', 1, type=int)
+        success = test_bluetooth_printer_socket(address, rfcomm_port)
+        if success:
+            return jsonify({'status': 'success', 'message': f"Test BT socket OK vers {address}",
+                            'address': address, 'rfcomm_port': rfcomm_port})
+        return jsonify({'status': 'error', 'message': f"Echec test BT vers {address}"}), 500
+
+    # -----------------------------------------------------------------------
 
     @app.route('/test-immediate-cut/<int:printer_id>')
     def test_immediate_cut_endpoint(printer_id):
