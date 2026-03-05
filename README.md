@@ -12,8 +12,8 @@ API d'impression thermique pour la gestion d'imprimantes POS (58mm et 80mm) conn
 
 - [Fonctionnalites](#fonctionnalites)
 - [Architecture](#architecture)
-- [Installation](#installation)
-- [Demarrage](#demarrage)
+- [Installation client (Setup.exe)](#installation-client-setupexe)
+- [Installation developpeur](#installation-developpeur)
 - [Connexion Bluetooth](#connexion-bluetooth)
 - [API REST](#api-rest)
 - [Format des requetes](#format-des-requetes)
@@ -30,6 +30,8 @@ API d'impression thermique pour la gestion d'imprimantes POS (58mm et 80mm) conn
 - Detection automatique de la largeur de papier (58mm / 80mm)
 - Moteur de recu dynamique (sections : header, text, table, keyvalue, separator, feed, cut)
 - Coupe papier immediate et robuste
+- **Service Windows** : demarre automatiquement au boot, aucune action manuelle
+- **Installateur .exe** : une seule installation, tout est configure automatiquement
 - Authentification par cle API (optionnelle)
 - CORS configurable
 
@@ -39,10 +41,13 @@ API d'impression thermique pour la gestion d'imprimantes POS (58mm et 80mm) conn
 
 ```
 thermal_printer_api/
-├── main.py                     # Point d'entree principal
-├── run.py                      # Lancement alternatif
-├── start.bat                   # Lancement Windows (double-clic)
-├── printer_config.json         # Configuration sauvegardee (auto-genere)
+├── installer_main.py           # Logique de l'installateur graphique
+├── build.py                    # Genere ThermalPrinterAPI_Setup.exe (PyInstaller)
+├── service.py                  # Service Windows (demarrage automatique)
+├── main.py                     # Point d'entree (lancement manuel)
+├── start.bat                   # Menu interactif (manuel / service)
+├── install_service.bat         # Installation service seule (admin)
+├── uninstall_service.bat       # Desinstallation du service (admin)
 ├── requirements.txt
 │
 ├── api/
@@ -56,22 +61,46 @@ thermal_printer_api/
 ├── utils/
 │   └── config.py               # Configuration globale et logging
 │
-├── gui/
-│   └── config_app.py           # Interface graphique (optionnelle)
-│
-└── static/
-    └── index.html              # Page d'accueil auto-generee
+└── gui/
+    └── config_app.py           # Interface graphique (optionnelle)
 ```
 
 ---
 
-## Installation
+## Installation client (Setup.exe)
+
+> Pour les clients finaux — aucune connaissance technique requise.
+
+### Methode recommandee
+
+1. Telecharger `ThermalPrinterAPI_Setup.exe`
+2. Double-cliquer dessus
+3. Cliquer **Installer** dans la fenetre qui s'ouvre
+4. C'est tout
+
+L'installateur effectue automatiquement :
+- Copie des fichiers dans `C:\Program Files\ThermalPrinterAPI\`
+- Installation des dependances Python
+- Enregistrement du **service Windows** (demarrage auto)
+- Demarrage immediat du service
+- Creation d'un raccourci dans le menu Demarrer
+
+**Des ce moment, l'API demarre a chaque demarrage Windows — sans rien faire.**
+
+API accessible sur : `http://localhost:5789`
+
+### Desinstallation
+
+Executer `C:\Program Files\ThermalPrinterAPI\uninstall.bat` en tant qu'administrateur.
+
+---
+
+## Installation developpeur
 
 ### Prerequis
 
 - Python 3.8+ (teste sur Python 3.13)
 - Windows 10/11
-- Imprimante thermique compatible ESC/POS
 
 ### Installer les dependances
 
@@ -79,39 +108,33 @@ thermal_printer_api/
 pip install -r requirements.txt
 ```
 
-**Dependances principales :**
-
-| Package | Usage |
-|---|---|
-| `flask` | Serveur HTTP |
-| `flask-cors` | Gestion CORS |
-| `pywin32` | Impression via spouleur Windows |
-| `pyserial` | Impression via port COM (Bluetooth SPP) |
-| `pillow` | Traitement image (optionnel) |
-
-**Optionnel — scan Bluetooth radio :**
-
-```bash
-pip install pybluez
-```
-
-> Necessite uniquement pour l'endpoint `/bluetooth/discover` (scan actif des appareils a portee).
-
----
-
-## Demarrage
-
-### Methode 1 — double-clic
-
-Lancer `start.bat`
-
-### Methode 2 — terminal
+### Lancement manuel
 
 ```bash
 python main.py
+# ou
+start.bat  (menu interactif)
 ```
 
-L'API demarre sur `http://0.0.0.0:5789`
+### Generer le Setup.exe a distribuer
+
+```bash
+pip install pyinstaller
+python build.py
+# -> dist/ThermalPrinterAPI_Setup.exe
+```
+
+### Gestion du service (ligne de commande, admin)
+
+```bash
+python service.py install    # Installer le service
+python service.py start      # Demarrer
+python service.py stop       # Arreter
+python service.py restart    # Redemarrer
+python service.py status     # Statut
+python service.py remove     # Desinstaller
+python service.py debug      # Mode debug (fenetre visible)
+```
 
 ---
 
@@ -122,19 +145,20 @@ L'API demarre sur `http://0.0.0.0:5789`
 1. **Appairez** l'imprimante dans **Parametres Windows > Bluetooth**
 2. Windows lui assigne un port COM (ex: `COM4`)
 3. Appelez `GET /bluetooth/ports` pour identifier le port
-4. Utilisez `POST /print` avec `printer_id` (l'imprimante apparait dans `/printers`) **OU** `POST /bluetooth/print` avec `"port": "COM4"`
+4. L'imprimante apparait automatiquement dans `GET /printers` avec `connection_type: "bluetooth_com"`
+5. Utilisez `POST /print` avec le `printer_id` correspondant — le routage est automatique
 
 ### Methode alternative : Socket RFCOMM (adresse MAC)
 
 Connexion directe sans driver Windows. Necessite `pybluez` ou le stack Bluetooth Windows.
 
-```bash
+```
 GET /bluetooth/test-socket/AA:BB:CC:DD:EE:FF
 ```
 
 ### Detection automatique dans /printers
 
-L'endpoint `/printers` retourne maintenant **toutes** les imprimantes, quel que soit le type de connexion :
+`GET /printers` retourne toutes les imprimantes, quel que soit le type de connexion :
 
 | `connection_type` | Description |
 |---|---|
@@ -143,7 +167,7 @@ L'endpoint `/printers` retourne maintenant **toutes** les imprimantes, quel que 
 | `bluetooth_com` | BT sur port COM sans driver (detection pyserial) |
 | `network` | Imprimante reseau (IP, WSD) |
 
-L'endpoint `/print` route automatiquement selon le type — **pas besoin de changer le code client**.
+`POST /print` route automatiquement selon le type — **le code client ne change pas**.
 
 ---
 
@@ -312,11 +336,17 @@ La configuration est sauvegardee dans `printer_config.json` (cree automatiquemen
 
 1. Verifiez qu'elle est bien **appairee** dans Parametres Windows > Bluetooth
 2. Allez dans **Peripheriques et imprimantes** et ajoutez-la comme imprimante
-3. Sinon elle apparaitra quand meme via `/bluetooth/ports` comme port COM
+3. Sinon elle apparaitra via `/bluetooth/ports` comme port COM
+
+### Le service ne demarre pas apres installation
+
+```bash
+python service.py debug
+```
+Lance l'API en mode visible pour voir l'erreur exacte.
 
 ### Coupe papier decalee (coupe le recu suivant)
 
-Utilisez l'endpoint de diagnostic :
 ```
 GET /test-immediate-cut/<id>
 ```
@@ -334,7 +364,7 @@ GET /encoding-test/<id>
 - Fermez le moniteur serie si ouvert
 - Redemarrez le service Bluetooth Windows
 
-### Module flask / pyserial manquant
+### Dependances manquantes
 
 ```bash
 pip install -r requirements.txt
