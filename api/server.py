@@ -153,6 +153,12 @@ def create_static_content():
         </div>
         
         <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="path">/test-immediate-cut/{printer_id}</span>
+            <div class="description">🆕 Teste la coupe immédiate (résout le problème de coupe décalée)</div>
+        </div>
+        
+        <div class="endpoint">
             <span class="method post">POST</span>
             <span class="path">/print</span>
             <div class="description">Imprime les données reçues avec encodage ASCII universel et conversion française</div>
@@ -177,19 +183,98 @@ def create_static_content():
     with open('static/index.html', 'w', encoding='utf-8') as f:
         f.write(html)
 
+def validate_print_request(data):
+    """Valide les données d'une requête d'impression. Retourne une liste d'erreurs (vide si OK)."""
+    errors = []
+    print_type = data.get('type', 'receipt')
+
+    if print_type == 'receipt':
+        receipt_data = data.get('data')
+        if receipt_data is None:
+            errors.append("Champ 'data' manquant")
+            return errors
+        if not isinstance(receipt_data, dict):
+            errors.append("'data' doit être un objet JSON")
+            return errors
+
+        # ── Mode dynamique : valider les sections ──────────────────────────
+        if 'sections' in receipt_data:
+            sections = receipt_data['sections']
+            if not isinstance(sections, list):
+                errors.append("'data.sections' doit être une liste")
+            else:
+                valid_types = {'header', 'text', 'separator', 'keyvalue', 'table', 'feed', 'cut'}
+                for i, section in enumerate(sections):
+                    if not isinstance(section, dict):
+                        errors.append(f"Section {i}: doit être un objet JSON")
+                        continue
+                    sec_type = section.get('type')
+                    if sec_type not in valid_types:
+                        errors.append(f"Section {i}: type '{sec_type}' inconnu. Types valides: {sorted(valid_types)}")
+                    if sec_type == 'table':
+                        if 'columns' not in section:
+                            errors.append(f"Section {i} (table): 'columns' manquant")
+                        if 'rows' not in section:
+                            errors.append(f"Section {i} (table): 'rows' manquant")
+                    if sec_type == 'keyvalue' and 'rows' not in section:
+                        errors.append(f"Section {i} (keyvalue): 'rows' manquant")
+            return errors
+
+        # ── Mode classique : valider les items ─────────────────────────────
+        items = receipt_data.get('items', [])
+        if not isinstance(items, list):
+            errors.append("'data.items' doit être une liste")
+        else:
+            for i, item in enumerate(items):
+                if not isinstance(item, dict):
+                    errors.append(f"Item {i}: doit être un objet JSON")
+                    continue
+                if 'name' not in item:
+                    errors.append(f"Item {i}: champ 'name' manquant")
+                if 'price' not in item:
+                    errors.append(f"Item {i}: champ 'price' manquant")
+                elif not isinstance(item['price'], (int, float)):
+                    errors.append(f"Item {i}: 'price' doit être un nombre")
+                if 'quantity' not in item:
+                    errors.append(f"Item {i}: champ 'quantity' manquant")
+                elif not isinstance(item['quantity'], (int, float)):
+                    errors.append(f"Item {i}: 'quantity' doit être un nombre")
+
+    elif print_type == 'raw':
+        if not data.get('text'):
+            errors.append("Champ 'text' requis pour le type 'raw'")
+    else:
+        errors.append(f"Type '{print_type}' non supporté. Utiliser 'receipt' ou 'raw'")
+
+    return errors
+
+
 def create_app():
     """Crée et configure l'application Flask"""
     app = Flask(__name__, static_folder='static')
-    
-    # Configuration CORS avec liste d'origines spécifiques
-    origins = [
-        "http://localhost:8000",     # Laravel local (ajustez le port si nécessaire)
-        "http://127.0.0.1:8000",     # Alternative pour Laravel local
-        "https://hotelia.cloud"      # Votre site Laravel en ligne (remplacez par l'URL réelle)
+
+    # Configuration CORS depuis la config (ou valeurs par défaut)
+    configured_origins = config.get('allowed_origins', [])
+    origins = configured_origins if configured_origins else [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "https://hotelia.cloud"
     ]
-    
+
     CORS(app, resources={r"/*": {"origins": origins}}, supports_credentials=True)
-    
+
+    # Vérification de la clé API sur toutes les routes sauf /health et /
+    @app.before_request
+    def check_api_key():
+        api_key = config.get('api_key', '')
+        if not api_key:
+            return  # Pas de clé configurée = pas d'authentification
+        if request.endpoint in ('index', 'health_check'):
+            return  # Ces routes sont publiques
+        request_key = request.headers.get('X-API-Key', '')
+        if request_key != api_key:
+            return jsonify({'status': 'error', 'message': 'Clé API invalide ou manquante'}), 401
+
     # Créer les fichiers statiques
     create_static_content()
     
@@ -283,7 +368,16 @@ def create_app():
                     'status': 'error',
                     'message': "Aucune donnée reçue"
                 }), 400
-            
+
+            # Validation des données
+            validation_errors = validate_print_request(data)
+            if validation_errors:
+                return jsonify({
+                    'status': 'error',
+                    'message': "Données invalides",
+                    'errors': validation_errors
+                }), 400
+
             # Utiliser l'imprimante spécifiée ou l'imprimante par défaut
             printer_id = data.get('printer_id', config.get('default_printer_id'))
             
@@ -436,6 +530,47 @@ def create_app():
                 'allow_override': config.get('allow_encoding_override', True)
             }
         })
+
+    @app.route('/test-immediate-cut/<int:printer_id>')
+    def test_immediate_cut_endpoint(printer_id):
+        """Teste spécifiquement le problème de coupe décalée"""
+        printers = get_printers()
+        
+        if printer_id < 0 or printer_id >= len(printers):
+            return jsonify({
+                'status': 'error',
+                'message': f"Imprimante avec ID {printer_id} non trouvée"
+            }), 404
+        
+        printer_name = printers[printer_id]['name']
+        
+        try:
+            from printer.printer_utils import test_immediate_cut
+            success = test_immediate_cut(printer_name)
+            
+            if success:
+                return jsonify({
+                    'status': 'success',
+                    'message': f"Test de coupe immédiate envoyé à {printer_name}",
+                    'instructions': [
+                        "Vérifiez que le reçu se coupe IMMÉDIATEMENT",
+                        "Il ne doit PAS attendre un prochain job d'impression",
+                        "Si le problème persiste, vérifiez les paramètres de l'imprimante"
+                    ],
+                    'test_type': 'immediate_cut_test',
+                    'expected_behavior': 'Le reçu doit se couper automatiquement sans délai'
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f"Échec du test de coupe immédiate sur {printer_name}"
+                }), 500
+                
+        except Exception as e:
+            return jsonify({
+                'status': 'error',
+                'message': f"Erreur lors du test de coupe immédiate: {str(e)}"
+            }), 500
     
     return app
 
@@ -451,6 +586,7 @@ def run_api_server(app=None):
     print(f"   • GET  /health : Vérifier le statut de l'API (ASCII universel)")
     print(f"   • GET  /printers : Lister les imprimantes avec encodage ASCII")
     print(f"   • GET  /test-printer/<id> : Test d'impression ASCII avec conversion française") 
+    print(f"   • GET  /test-immediate-cut/<id> : 🆕 Test coupe immédiate (problème coupe décalée)")
     print(f"   • POST /print : Impression ASCII avec conversion française automatique")
     print(f"   • GET  /encoding-test/<id> : Test de tous les encodages (ASCII recommandé)")
     print(f"   • GET  /encoding-info : Informations sur la configuration ASCII")

@@ -50,6 +50,14 @@ config = {
     "preserve_euro_symbol": True,             # € → EUR
     "preserve_ligatures": True,               # œ → oe, æ → ae
     
+    # Devise et format des montants
+    "currency": "FCFA",                       # Symbole de devise affiché sur les tickets
+    "currency_decimals": 0,                   # 0 pour FCFA, 2 pour EUR/USD
+
+    # Sécurité API
+    "api_key": "",                            # Clé API requise (vide = pas d'authentification)
+    "allowed_origins": [],                    # Origines CORS autorisées (vide = valeurs par défaut)
+
     # Logging et débogage
     "log_encoding_decisions": True,           # Log les décisions d'encodage
     "debug_encoding": False                   # Mode debug pour l'encodage
@@ -129,7 +137,11 @@ def migrate_config_if_needed():
         'preserve_euro_symbol': True,
         'preserve_ligatures': True,
         'log_encoding_decisions': True,
-        'debug_encoding': False
+        'debug_encoding': False,
+        'currency': 'FCFA',
+        'currency_decimals': 0,
+        'api_key': '',
+        'allowed_origins': [],
     }
     
     for prop, default_value in new_properties.items():

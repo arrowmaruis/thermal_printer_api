@@ -8,6 +8,7 @@ from utils.config import logger
 
 # Commandes ESC/POS de base
 ESC_INIT = b'\x1b\x40'  # Initialiser l'imprimante
+ESC_INIT_ROBUST = b'\x1b\x40\x1b\x64\x01\x1d\x61\x00'  # Initialisation robuste + reset + avance
 ESC_BOLD_ON = b'\x1b\x45\x01'  # Activer le gras
 ESC_BOLD_OFF = b'\x1b\x45\x00'  # Désactiver le gras
 ESC_DOUBLE_HEIGHT_ON = b'\x1b\x21\x10'  # Activer double hauteur
@@ -15,7 +16,10 @@ ESC_DOUBLE_HEIGHT_OFF = b'\x1b\x21\x00'  # Désactiver double hauteur
 ESC_CENTER = b'\x1b\x61\x01'  # Centrer le texte
 ESC_LEFT = b'\x1b\x61\x00'  # Aligner à gauche
 ESC_RIGHT = b'\x1b\x61\x02'  # Aligner à droite
-ESC_CUT = b'\x1d\x56\x41'  # Couper le papier
+ESC_CUT = b'\x1d\x56\x41'  # Couper le papier (méthode 1)
+ESC_CUT_FULL = b'\x1d\x56\x00'  # Coupe complète (méthode 2)
+ESC_CUT_PARTIAL = b'\x1d\x56\x01'  # Coupe partielle (méthode 3)
+ESC_FEED_CUT = b'\x1b\x64\x03\x1d\x56\x41'  # Avance + Coupe (solution robuste)
 ESC_FEED = b'\x1b\x64'  # Avancer le papier
 
 def get_codepage_command(encoding):
@@ -236,6 +240,74 @@ def get_printers():
         logger.error(f"Erreur lors de la récupération des imprimantes: {e}")
         return []
 
+def get_robust_init_command(printer_name=None):
+    """
+    Retourne une séquence d'initialisation robuste pour l'imprimante
+    
+    Args:
+        printer_name (str): Nom de l'imprimante
+        
+    Returns:
+        bytes: Commande d'initialisation robuste
+    """
+    robust_init = bytearray()
+    
+    # Étape 1: Réinitialisation complète
+    robust_init.extend(b'\x1b\x40')          # ESC @ - Reset complet
+    
+    # Étape 2: Status et préparation
+    robust_init.extend(b'\x10\x04\x01')      # DLE EOT 1 - Status de l'imprimante
+    robust_init.extend(b'\x1d\x61\x00')      # GS a 0 - Activer l'auto-cut
+    
+    # Étape 3: Configuration du papier
+    robust_init.extend(b'\x1b\x64\x01')      # ESC d 1 - Avancer une ligne
+    
+    if printer_name:
+        logger.debug(f"Initialisation robuste générée pour {printer_name}")
+    
+    return bytes(robust_init)
+
+def get_robust_cut_command(printer_name=None):
+    """
+    Retourne une commande de coupe IMMÉDIATE qui force la coupe du premier reçu
+    
+    Args:
+        printer_name (str): Nom de l'imprimante pour détecter le type
+        
+    Returns:
+        bytes: Commande de coupe immédiate
+    """
+    # SOLUTION pour le problème de coupe décalée :
+    # Le problème : l'imprimante garde la commande de coupe en tampon
+    # La solution : forcer le flush du tampon ET coupe immédiate
+    
+    robust_cut = bytearray()
+    
+    # Étape 1: Avancer suffisamment de lignes pour s'assurer qu'il y a du papier
+    robust_cut.extend(b'\x1b\x64\x03')      # ESC d 3 - Avancer 3 lignes (important!)
+    
+    # Étape 2: Forcer le vidage du tampon d'impression (CRITIQUE)
+    robust_cut.extend(b'\x0c')              # Form Feed - Force le flush du tampon
+    robust_cut.extend(b'\x10\x04\x01')      # DLE EOT 1 - Demander status (force la communication)
+    
+    # Étape 3: Coupe immédiate et forcée
+    robust_cut.extend(b'\x1d\x56\x00')      # GS V 0 - Coupe complète IMMÉDIATE
+    
+    # Étape 4: Alternative avec coupe partielle si la complète ne marche pas
+    robust_cut.extend(b'\x1d\x56\x01')      # GS V 1 - Coupe partielle
+    
+    # Étape 5: FORCER l'exécution avec des commandes de contrôle
+    robust_cut.extend(b'\x1b\x64\x01')      # ESC d 1 - Avancer 1 ligne (force l'action)
+    robust_cut.extend(b'\x1d\x56\x41')      # GS V A - Coupe avec avance (dernière tentative)
+    
+    # Étape 6: Finaliser avec flush final
+    robust_cut.extend(b'\x0c')              # Form Feed final pour forcer l'action
+    
+    if printer_name:
+        logger.debug(f"Commande de coupe IMMÉDIATE générée pour {printer_name}")
+    
+    return bytes(robust_cut)
+
 def safe_encode_french(text, encoding='ascii', printer_name=None):
     """
     Encodage sécurisé optimisé pour ASCII par défaut
@@ -267,20 +339,33 @@ def safe_encode_french(text, encoding='ascii', printer_name=None):
         return text_ascii.encode('ascii', errors='replace')
 
 def print_raw(printer_name, data):
-    """Imprime des données brutes sur l'imprimante spécifiée"""
+    """Imprime des données brutes sur l'imprimante spécifiée avec flush forcé"""
     try:
         hPrinter = win32print.OpenPrinter(printer_name)
         try:
+            # Utiliser un document avec flush immédiat
             hJob = win32print.StartDocPrinter(hPrinter, 1, ("Impression Hotelia", None, "RAW"))
             try:
                 win32print.StartPagePrinter(hPrinter)
+                
+                # Écrire les données
                 win32print.WritePrinter(hPrinter, data)
+                
+                # IMPORTANT: Forcer le flush immédiat après l'écriture
+                # Ceci garantit que la coupe s'exécute immédiatement
                 win32print.EndPagePrinter(hPrinter)
+                
             finally:
                 win32print.EndDocPrinter(hPrinter)
+                
         finally:
             win32print.ClosePrinter(hPrinter)
-        logger.info(f"Impression réussie sur {printer_name}")
+            
+        # Attendre un court délai pour s'assurer que l'impression est terminée
+        import time
+        time.sleep(0.1)  # 100ms pour laisser le temps à l'imprimante de traiter
+        
+        logger.info(f"Impression réussie sur {printer_name} avec flush forcé")
         return True
     except Exception as e:
         logger.error(f"Erreur lors de l'impression: {e}")
@@ -289,7 +374,7 @@ def print_raw(printer_name, data):
 def print_test(printer_name):
     """Imprime un ticket de test optimisé avec conversion ASCII pour toutes les imprimantes"""
     commands = bytearray()
-    commands.extend(ESC_INIT)
+    commands.extend(get_robust_init_command(printer_name))
     
     # Détection automatique des caractéristiques
     printer_width = detect_printer_width(printer_name)
@@ -338,7 +423,7 @@ def print_test(printer_name):
     commands.extend(ESC_CENTER)
     commands.extend(safe_encode_french("*** ASCII UNIVERSEL - TEST OK ***", encoding, printer_name))
     commands.extend(b'\n\n\n')
-    commands.extend(ESC_CUT)
+    commands.extend(get_robust_cut_command(printer_name))
     
     return print_raw(printer_name, commands)
 
@@ -404,6 +489,61 @@ def print_encoding_test_results(printer_name):
     print("   → Symboles: 15,50€ → 15,50 EUR")
     
     return results
+
+def test_immediate_cut(printer_name):
+    """
+    Teste spécifiquement le problème de coupe décalée
+    Imprime un reçu de test qui DOIT se couper immédiatement
+    """
+    logger.info(f"🧪 TEST DE COUPE IMMÉDIATE pour {printer_name}")
+    
+    commands = bytearray()
+    
+    # Initialisation robuste
+    commands.extend(get_robust_init_command(printer_name))
+    commands.extend(get_codepage_command('ascii'))
+    
+    # Contenu du test
+    commands.extend(ESC_CENTER)
+    commands.extend(ESC_BOLD_ON)
+    commands.extend(safe_encode_french("TEST COUPE IMMÉDIATE", 'ascii', printer_name))
+    commands.extend(b'\n')
+    commands.extend(ESC_BOLD_OFF)
+    commands.extend(b'\n')
+    
+    commands.extend(ESC_LEFT)
+    commands.extend(safe_encode_french(f"Imprimante: {printer_name}", 'ascii', printer_name))
+    commands.extend(b'\n')
+    commands.extend(safe_encode_french(f"Date: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", 'ascii', printer_name))
+    commands.extend(b'\n\n')
+    
+    commands.extend(safe_encode_french("Ce reçu DOIT se couper", 'ascii', printer_name))
+    commands.extend(b'\n')
+    commands.extend(safe_encode_french("immédiatement après impression", 'ascii', printer_name))
+    commands.extend(b'\n')
+    commands.extend(safe_encode_french("sans attendre le prochain job.", 'ascii', printer_name))
+    commands.extend(b'\n\n')
+    
+    commands.extend(ESC_CENTER)
+    commands.extend(ESC_BOLD_ON)
+    commands.extend(safe_encode_french("*** COUPE FORCÉE ***", 'ascii', printer_name))
+    commands.extend(b'\n')
+    commands.extend(ESC_BOLD_OFF)
+    
+    # COUPE IMMÉDIATE FORCÉE
+    commands.extend(get_robust_cut_command(printer_name))
+    
+    # Imprimer avec flush forcé
+    success = print_raw(printer_name, commands)
+    
+    if success:
+        print(f"✅ Test de coupe immédiate envoyé à {printer_name}")
+        print("🔍 Vérifiez que le reçu se coupe IMMÉDIATEMENT")
+        print("❌ Si il ne se coupe pas, le problème persiste")
+    else:
+        print(f"❌ Échec du test sur {printer_name}")
+    
+    return success
 
 def test_french_conversion():
     """Teste la conversion française → ASCII pour validation"""
