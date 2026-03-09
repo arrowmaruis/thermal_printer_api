@@ -117,7 +117,8 @@ def _render_keyvalue_section(commands, section, max_width, encode_text):
             commands.extend(ESC_BOLD_OFF)
 
 
-def _render_table_section(commands, section, max_width, encode_text, currency, decimals):
+def _render_table_section(commands, section, max_width, encode_text, currency, decimals,
+                          printer_width='58mm'):
     """
     Rend une section 'table' avec colonnes définies dynamiquement.
 
@@ -147,14 +148,40 @@ def _render_table_section(commands, section, max_width, encode_text, currency, d
 
     # Normaliser : accepte ["Article","Prix"] ou [{"label":"Article","width":10,...}]
     if raw_columns and isinstance(raw_columns[0], str):
-        # Format simple : repartir equitablement la largeur disponible
         n = len(raw_columns)
-        col_w = max(3, (max_width - (n - 1)) // n)
-        columns = [{'label': s, 'width': col_w, 'align': 'left', 'format': 'text'}
-                   for s in raw_columns]
-        # Derniere colonne alignee a droite par convention
-        if n > 1:
-            columns[-1]['align'] = 'right'
+        available = max_width - (n - 1)  # largeur nette après séparateurs
+
+        # Proportions optimisées selon le nombre de colonnes :
+        # - 1ère colonne (libellé/article) : large
+        # - colonnes intermédiaires (qté)  : étroites
+        # - dernière colonne (prix/montant): modérée, alignée à droite
+        proportions = {
+            1: [1.0],
+            2: [0.62, 0.38],
+            3: [0.54, 0.14, 0.32],
+            4: [0.40, 0.12, 0.18, 0.30],
+        }
+        props = proportions.get(n)
+        if props:
+            widths = []
+            used = 0
+            for p in props[:-1]:
+                w = max(3, int(available * p))
+                widths.append(w)
+                used += w
+            widths.append(max(3, available - used))  # dernière colonne = reste
+        else:
+            col_w = max(3, available // n)
+            widths = [col_w] * n
+
+        columns = []
+        for i, (s, w) in enumerate(zip(raw_columns, widths)):
+            columns.append({
+                'label':  s,
+                'width':  w,
+                'align':  'right' if i == n - 1 else 'left',
+                'format': 'text',
+            })
     else:
         columns = [dict(c) for c in raw_columns]
 
@@ -271,7 +298,8 @@ def _render_section(commands, section, max_width, encode_text, currency, decimal
         _render_keyvalue_section(commands, section, max_width, encode_text)
 
     elif sec_type == 'table':
-        _render_table_section(commands, section, max_width, encode_text, currency, decimals)
+        _render_table_section(commands, section, max_width, encode_text, currency, decimals,
+                              printer_width)
 
     elif sec_type == 'feed':
         lines = max(1, int(section.get('lines', 1)))

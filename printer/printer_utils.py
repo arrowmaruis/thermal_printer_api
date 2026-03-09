@@ -504,11 +504,18 @@ def safe_encode_french(text, encoding='ascii', printer_name=None):
     if not text:
         return b''
 
-    # PC858 est activé via ESC t 14 dans get_robust_init_command.
-    # On encode directement en CP858 : accents français ET € (0xD5) sont supportés.
-    # Normaliser les espaces insécables (\u202f narrow no-break space de toLocaleString('fr-FR'),
-    # \u00a0 non-breaking space) en espace ASCII avant encodage.
+    # Normaliser les espaces insécables (\u202f de toLocaleString('fr-FR'), \u00a0)
     text = text.replace('\u202f', ' ').replace('\u00a0', ' ')
+
+    # Convertir les symboles monétaires en texte ASCII lisible (même comportement que Tester ASCII)
+    # Cela garantit un affichage cohérent sur toutes les imprimantes sans dépendre du code page
+    currency_ascii = {
+        '€': 'EUR', '£': 'GBP', '¥': 'JPY', '¤': '', '₦': 'NGN',
+        '₣': 'CHF', '₹': 'INR', '₩': 'KRW', '₪': 'ILS',
+    }
+    for sym, code in currency_ascii.items():
+        text = text.replace(sym, code)
+
     try:
         return text.encode('cp858')
     except (UnicodeEncodeError, LookupError):
