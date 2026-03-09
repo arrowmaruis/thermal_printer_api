@@ -144,11 +144,24 @@ def _run_service_command(cmd):
     return result.returncode, result.stdout, result.stderr
 
 
+def _get_short_path(path):
+    """Retourne le chemin court 8.3 Windows (sans espaces) via GetShortPathNameW."""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(512)
+        ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, 512)
+        short = buf.value
+        if short:
+            return short
+    except Exception:
+        pass
+    return str(path)
+
+
 def install_service():
     """Installe le service Windows via sc.exe."""
-    python = _get_python_exe()
-    script = os.path.abspath(__file__)
-    binpath = f'"{python}" "{script}" run'
+    python = _get_short_path(_get_python_exe())
+    script = _get_short_path(os.path.abspath(__file__))
 
     print(f"Installation du service '{SERVICE_NAME}'...")
     code, out, err = _run_service_command(
@@ -266,8 +279,8 @@ if __name__ == '__main__':
         try:
             _run_as_win32_service()
             sys.exit(0)
-        except ImportError:
-            pass  # pywin32 pas disponible ou pas les bons modules, fallback sc.exe
+        except Exception:
+            pass  # pywin32 indisponible ou erreur — fallback sc.exe
 
     # Fallback : commandes manuelles via sc.exe / net
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:

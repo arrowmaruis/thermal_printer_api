@@ -10,6 +10,54 @@ from printer.printer_utils import (
 )
 
 
+def _sanitize_price(value):
+    """Normalise n'importe quelle valeur de prix en float propre.
+    Gère : int/float, '1 500,50', '1,500.50', '15 000', symboles monétaires."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return 0.0
+    import re
+    v = value.strip()
+    for sym in ['€', '$', '£', '₣', 'EUR', 'USD', 'GBP', 'FCFA', 'CFA', 'XOF', 'MAD', 'DZD', 'TND']:
+        v = v.replace(sym, '')
+    v = v.strip().replace('\u202f', '').replace('\u00a0', '').replace(' ', '')
+    if ',' in v and '.' in v:
+        v = v.replace(',', '')                       # virgule = milliers (1,500.00)
+    elif ',' in v:
+        parts = v.split(',')
+        if len(parts) == 2 and len(parts[1]) == 3 and parts[1].isdigit() and len(parts[0]) <= 3:
+            v = v.replace(',', '')                   # milliers (1,500)
+        else:
+            v = v.replace(',', '.')                  # décimale FR (15,50 → 15.50)
+    v = re.sub(r'[^\d.\-]', '', v)
+    try:
+        return float(v) if v else 0.0
+    except ValueError:
+        return 0.0
+
+
+def _fmt(value, decimals=2):
+    """Formate un montant avec espace comme séparateur de milliers.
+    Exemple : 15000.5 → '15 000,50' """
+    try:
+        n = _sanitize_price(value)
+    except (TypeError, ValueError):
+        return str(value)
+    # Format Python avec virgule comme séparateur de milliers, point décimal
+    formatted = f"{n:,.{decimals}f}"
+    # Séparer la partie entière et décimale
+    if '.' in formatted:
+        int_part, dec_part = formatted.split('.')
+    else:
+        int_part, dec_part = formatted, ''
+    # Remplacer la virgule (milliers) par un espace
+    int_part = int_part.replace(',', ' ')  # espace ASCII (compatible tous encodages)
+    if dec_part:
+        return f"{int_part},{dec_part}"
+    return int_part
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MOTEUR DYNAMIQUE — sections
 # ─────────────────────────────────────────────────────────────────────────────
@@ -89,13 +137,26 @@ def _render_table_section(commands, section, max_width, encode_text, currency, d
       ]
     }
     """
-    columns     = [dict(c) for c in section.get('columns', [])]   # copie pour ne pas muter
+    raw_columns = section.get('columns', [])
     rows        = section.get('rows', [])
     show_header = section.get('show_header', True)
     separator   = section.get('separator', True)
 
-    if not columns:
+    if not raw_columns:
         return
+
+    # Normaliser : accepte ["Article","Prix"] ou [{"label":"Article","width":10,...}]
+    if raw_columns and isinstance(raw_columns[0], str):
+        # Format simple : repartir equitablement la largeur disponible
+        n = len(raw_columns)
+        col_w = max(3, (max_width - (n - 1)) // n)
+        columns = [{'label': s, 'width': col_w, 'align': 'left', 'format': 'text'}
+                   for s in raw_columns]
+        # Derniere colonne alignee a droite par convention
+        if n > 1:
+            columns[-1]['align'] = 'right'
+    else:
+        columns = [dict(c) for c in raw_columns]
 
     # Réduire les largeurs proportionnellement si ça dépasse la largeur papier
     separators       = len(columns) - 1
@@ -113,10 +174,7 @@ def _render_table_section(commands, section, max_width, encode_text, currency, d
         fmt   = col.get('format', 'text')
 
         if fmt == 'price':
-            try:
-                formatted = f"{float(value):,.{decimals}f}"
-            except (ValueError, TypeError):
-                formatted = str(value)
+            formatted = _fmt(value, decimals)
         elif fmt == 'integer':
             try:
                 formatted = str(int(value))
@@ -220,7 +278,9 @@ def _render_section(commands, section, max_width, encode_text, currency, decimal
         commands.extend(b'\n' * lines)
 
     elif sec_type == 'cut':
-        pass  # géré dans format_receipt (après toutes les sections)
+        lines = max(1, int(section.get('lines', 3)))
+        commands.extend(b'\n' * lines)
+        commands.extend(get_robust_cut_command())
 
     else:
         logger.warning(f"Type de section inconnu: {sec_type}")
@@ -298,11 +358,14 @@ def format_receipt(receipt_data, receipt_type="standard", printer_width=None, en
             format_dynamic_content(commands, receipt_data, MAX_WIDTH, encode_text, currency, decimals,
                                    printer_name, printer_width)
 
-            # Coupe finale sauf si une section 'cut' est déjà présente
+            # Coupe finale : si aucune section 'cut' n'est présente, ajouter la coupe ici
             has_explicit_cut = any(s.get('type') == 'cut' for s in receipt_data.get('sections', []))
             if not has_explicit_cut:
                 commands.extend(b'\n\n\n')
                 commands.extend(get_robust_cut_command(printer_name))
+            else:
+                # Même avec une section 'cut' explicite, s'assurer que le dernier feed est présent
+                commands.extend(b'\n')
             return commands
 
         # ── Mode classique : en-tête ────────────────────────────────────────
@@ -512,18 +575,18 @@ def format_standard_content(commands, receipt_data, max_width, article_width, cu
                 name = name.ljust(eff_art_width)
 
             qty        = item.get('quantity', 1)
-            price      = float(item.get('price', 0))
+            price      = _sanitize_price(item.get('price', 0))
             item_total = qty * price
             total     += item_total
 
-            line = f"{name} {qty:2d} {price:6.{decimals}f} {item_total:{7+decimals}.{decimals}f}"
+            line = f"{name} {qty:2d} {_fmt(price, decimals):>7} {_fmt(item_total, decimals):>{7+decimals}}"
             commands.extend(encode_text(line))
             commands.extend(b'\n')
 
         commands.extend(b'-' * max_width)
         commands.extend(b'\n')
         commands.extend(ESC_BOLD_ON)
-        commands.extend(encode_text(f"TOTAL:      {total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"TOTAL:      {_fmt(total, decimals):>12} {currency}"))
         commands.extend(b'\n')
         commands.extend(ESC_BOLD_OFF)
 
@@ -557,7 +620,7 @@ def format_hotel_content(commands, receipt_data, max_width, article_width, curre
         for item in accommodation_items:
             name       = item.get('name', '')
             qty        = item.get('quantity', 1)
-            price      = float(item.get('price', 0))
+            price      = _sanitize_price(item.get('price', 0))
             item_total = qty * price
             room_total += item_total
 
@@ -579,13 +642,13 @@ def format_hotel_content(commands, receipt_data, max_width, article_width, curre
                 commands.extend(encode_text(name))
                 commands.extend(b'\n')
 
-            price_line = f"  {qty} {item.get('quantity_unit', 'nuit(s)')} x {price:,.{decimals}f} {currency}/nuit"
+            price_line = f"  {qty} {item.get('quantity_unit', 'nuit(s)')} x {_fmt(price, decimals)} {currency}/nuit"
             commands.extend(encode_text(price_line))
             commands.extend(b'\n')
 
         commands.extend(b'-' * max_width)
         commands.extend(b'\n')
-        commands.extend(encode_text(f"Sous-total:  {room_total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Sous-total:  {_fmt(room_total, decimals):>12} {currency}"))
         commands.extend(b'\n\n')
 
     if food_items:
@@ -600,20 +663,20 @@ def format_hotel_content(commands, receipt_data, max_width, article_width, curre
         for item in food_items:
             name       = item.get('name', '')
             qty        = item.get('quantity', 1)
-            price      = float(item.get('price', 0))
+            price      = _sanitize_price(item.get('price', 0))
             item_total = qty * price
             food_total += item_total
 
-            line = f"{name} ({qty}) {item_total:,.{decimals}f} {currency}"
+            line = f"{name} ({qty}) {_fmt(item_total, decimals)} {currency}"
             if len(line) > max_width:
                 name = name[:max_width - 20] + "..."
-                line = f"{name} ({qty}) {item_total:,.{decimals}f} {currency}"
+                line = f"{name} ({qty}) {_fmt(item_total, decimals)} {currency}"
             commands.extend(encode_text(line))
             commands.extend(b'\n')
 
         commands.extend(b'-' * max_width)
         commands.extend(b'\n')
-        commands.extend(encode_text(f"Sous-total:  {food_total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Sous-total:  {_fmt(food_total, decimals):>12} {currency}"))
         commands.extend(b'\n\n')
 
     if other_items:
@@ -628,32 +691,32 @@ def format_hotel_content(commands, receipt_data, max_width, article_width, curre
         for item in other_items:
             name       = item.get('name', '')
             qty        = item.get('quantity', 1)
-            price      = float(item.get('price', 0))
+            price      = _sanitize_price(item.get('price', 0))
             item_total = qty * price
             extras_total += item_total
 
-            line = f"{name}: {item_total:,.{decimals}f} {currency}"
+            line = f"{name}: {_fmt(item_total, decimals)} {currency}"
             if len(line) > max_width:
                 name = name[:max_width - 15] + "..."
-                line = f"{name}: {item_total:,.{decimals}f} {currency}"
+                line = f"{name}: {_fmt(item_total, decimals)} {currency}"
             commands.extend(encode_text(line))
             commands.extend(b'\n')
 
         commands.extend(b'-' * max_width)
         commands.extend(b'\n')
-        commands.extend(encode_text(f"Sous-total:  {extras_total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Sous-total:  {_fmt(extras_total, decimals):>12} {currency}"))
         commands.extend(b'\n\n')
 
     discount = stats.get('discount_amount', 0)
     if discount > 0:
-        commands.extend(encode_text(f"Remise:     -{float(discount):12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Remise:     -{_fmt(_sanitize_price(discount), decimals):>12} {currency}"))
         commands.extend(b'\n')
 
-    total = sum(item.get('quantity', 1) * float(item.get('price', 0)) for item in items)
+    total = sum(item.get('quantity', 1) * _sanitize_price(item.get('price', 0)) for item in items)
     commands.extend(b'-' * max_width)
     commands.extend(b'\n')
     commands.extend(ESC_BOLD_ON)
-    commands.extend(encode_text(f"TOTAL:      {total:12,.{decimals}f} {currency}"))
+    commands.extend(encode_text(f"TOTAL:      {_fmt(total, decimals):>12} {currency}"))
     commands.extend(b'\n')
     commands.extend(ESC_BOLD_OFF)
 
@@ -693,7 +756,7 @@ def format_mixed_content(commands, receipt_data, max_width, article_width, curre
         for item in accommodation_items:
             name       = item.get('name', '')
             qty        = item.get('quantity', 1)
-            price      = float(item.get('price', 0))
+            price      = _sanitize_price(item.get('price', 0))
             item_total = qty * price
             room_total += item_total
 
@@ -715,13 +778,13 @@ def format_mixed_content(commands, receipt_data, max_width, article_width, curre
                 commands.extend(encode_text(name))
                 commands.extend(b'\n')
 
-            price_line = f"  {qty} {item.get('quantity_unit', 'nuit(s)')} x {price:,.{decimals}f} {currency}/nuit"
+            price_line = f"  {qty} {item.get('quantity_unit', 'nuit(s)')} x {_fmt(price, decimals)} {currency}/nuit"
             commands.extend(encode_text(price_line))
             commands.extend(b'\n')
 
         commands.extend(b'-' * max_width)
         commands.extend(b'\n')
-        commands.extend(encode_text(f"Hébergement: {room_total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Hébergement: {_fmt(room_total, decimals):>12} {currency}"))
         commands.extend(b'\n\n')
 
     if food_items or drink_items:
@@ -743,10 +806,10 @@ def format_mixed_content(commands, receipt_data, max_width, article_width, curre
             name = item.get('name', '')
             name = (name[:eff_art_width - 1] + '.') if len(name) > eff_art_width else name.ljust(eff_art_width)
             qty        = item.get('quantity', 1)
-            price      = float(item.get('price', 0))
+            price      = _sanitize_price(item.get('price', 0))
             item_total = qty * price
             food_total += item_total
-            commands.extend(encode_text(f"{name} {qty:2d} {price:6.{decimals}f} {item_total:{7+decimals}.{decimals}f}"))
+            commands.extend(encode_text(f"{name} {qty:2d} {_fmt(price, decimals):>7} {_fmt(item_total, decimals):>{7+decimals}}"))
             commands.extend(b'\n')
 
         drink_total = 0
@@ -754,16 +817,16 @@ def format_mixed_content(commands, receipt_data, max_width, article_width, curre
             name = item.get('name', '')
             name = (name[:eff_art_width - 1] + '.') if len(name) > eff_art_width else name.ljust(eff_art_width)
             qty         = item.get('quantity', 1)
-            price       = float(item.get('price', 0))
+            price       = _sanitize_price(item.get('price', 0))
             item_total  = qty * price
             drink_total += item_total
-            commands.extend(encode_text(f"{name} {qty:2d} {price:6.{decimals}f} {item_total:{7+decimals}.{decimals}f}"))
+            commands.extend(encode_text(f"{name} {qty:2d} {_fmt(price, decimals):>7} {_fmt(item_total, decimals):>{7+decimals}}"))
             commands.extend(b'\n')
 
         commands.extend(b'-' * max_width)
         commands.extend(b'\n')
         consumption_total = food_total + drink_total
-        commands.extend(encode_text(f"Consommation:{consumption_total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Consommation:{_fmt(consumption_total, decimals):>12} {currency}"))
         commands.extend(b'\n\n')
 
     if other_items:
@@ -777,32 +840,32 @@ def format_mixed_content(commands, receipt_data, max_width, article_width, curre
         extras_total = 0
         for item in other_items:
             name       = item.get('name', '')
-            price      = float(item.get('price', 0))
+            price      = _sanitize_price(item.get('price', 0))
             item_total = item.get('quantity', 1) * price
             extras_total += item_total
 
-            line = f"{name}: {item_total:,.{decimals}f} {currency}"
+            line = f"{name}: {_fmt(item_total, decimals)} {currency}"
             if len(line) > max_width:
                 name = name[:max_width - 15] + "..."
-                line = f"{name}: {item_total:,.{decimals}f} {currency}"
+                line = f"{name}: {_fmt(item_total, decimals)} {currency}"
             commands.extend(encode_text(line))
             commands.extend(b'\n')
 
         commands.extend(b'-' * max_width)
         commands.extend(b'\n')
-        commands.extend(encode_text(f"Extras:      {extras_total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Extras:      {_fmt(extras_total, decimals):>12} {currency}"))
         commands.extend(b'\n\n')
 
     discount_items = [item for item in items if item.get('type') == 'discount']
-    discount_total = sum(float(item.get('price', 0)) for item in discount_items)
+    discount_total = sum(_sanitize_price(item.get('price', 0)) for item in discount_items)
     if discount_total != 0:
-        commands.extend(encode_text(f"Remise:     {discount_total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Remise:     {_fmt(discount_total, decimals):>12} {currency}"))
         commands.extend(b'\n')
 
-    room_total        = sum(i.get('quantity', 1) * float(i.get('price', 0)) for i in accommodation_items)
-    food_total        = sum(i.get('quantity', 1) * float(i.get('price', 0)) for i in food_items)
-    drink_total       = sum(i.get('quantity', 1) * float(i.get('price', 0)) for i in drink_items)
-    extras_total      = sum(i.get('quantity', 1) * float(i.get('price', 0)) for i in other_items)
+    room_total        = sum(i.get('quantity', 1) * _sanitize_price(i.get('price', 0)) for i in accommodation_items)
+    food_total        = sum(i.get('quantity', 1) * _sanitize_price(i.get('price', 0)) for i in food_items)
+    drink_total       = sum(i.get('quantity', 1) * _sanitize_price(i.get('price', 0)) for i in drink_items)
+    extras_total      = sum(i.get('quantity', 1) * _sanitize_price(i.get('price', 0)) for i in other_items)
     grand_total       = room_total + food_total + drink_total + extras_total + discount_total
 
     commands.extend(ESC_BOLD_ON)
@@ -813,21 +876,21 @@ def format_mixed_content(commands, receipt_data, max_width, article_width, curre
     commands.extend(b'\n')
 
     if room_total > 0:
-        commands.extend(encode_text(f"Hébergement: {room_total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Hébergement: {_fmt(room_total, decimals):>12} {currency}"))
         commands.extend(b'\n')
     if food_total > 0 or drink_total > 0:
-        commands.extend(encode_text(f"Consommation:{food_total+drink_total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Consommation:{_fmt(food_total+drink_total, decimals):>12} {currency}"))
         commands.extend(b'\n')
     if extras_total > 0:
-        commands.extend(encode_text(f"Extras:      {extras_total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Extras:      {_fmt(extras_total, decimals):>12} {currency}"))
         commands.extend(b'\n')
     if discount_total != 0:
-        commands.extend(encode_text(f"Remise:      {discount_total:12,.{decimals}f} {currency}"))
+        commands.extend(encode_text(f"Remise:      {_fmt(discount_total, decimals):>12} {currency}"))
         commands.extend(b'\n')
 
     commands.extend(b'-' * max_width)
     commands.extend(b'\n')
     commands.extend(ESC_BOLD_ON)
-    commands.extend(encode_text(f"TOTAL:      {grand_total:12,.{decimals}f} {currency}"))
+    commands.extend(encode_text(f"TOTAL:      {_fmt(grand_total, decimals):>12} {currency}"))
     commands.extend(b'\n')
     commands.extend(ESC_BOLD_OFF)

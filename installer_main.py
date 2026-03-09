@@ -5,15 +5,16 @@
 Installateur graphique de Thermal Printer API.
 
 Ce fichier est compile par PyInstaller en ThermalPrinterAPI_Setup.exe.
-L'utilisateur double-clique dessus — tout s'installe automatiquement.
+Il embarque ThermalPrinterAPI.exe (le serveur Flask autonome).
 
 Ce que fait l'installateur :
   1. Verifie les droits administrateur (se relance si necessaire)
-  2. Copie les fichiers dans C:\Program Files\ThermalPrinterAPI\
-  3. Installe les dependances Python dans le dossier d'installation
-  4. Enregistre le service Windows (demarrage auto)
-  5. Demarre le service immediatement
-  6. Cree un raccourci dans le menu Demarrer
+  2. Copie ThermalPrinterAPI.exe dans C:\Program Files\ThermalPrinterAPI\
+  3. Enregistre le service Windows (demarrage auto via sc.exe)
+  4. Demarre le service immediatement
+  5. Cree un raccourci dans le menu Demarrer
+
+Aucun Python ni pip requis sur la machine cible.
 """
 
 import os
@@ -38,8 +39,7 @@ SERVICE_NAME    = "ThermalPrinterAPI"
 SERVICE_DISPLAY = "Thermal Printer API - Hotelia"
 SERVICE_DESC    = "API d'impression thermique POS. Demarre automatiquement au demarrage de Windows."
 INSTALL_DIR     = Path(r"C:\Program Files\ThermalPrinterAPI")
-SERVICE_EXE     = INSTALL_DIR / "thermal_printer_api.exe"
-PYTHON_EMBED_DIR = INSTALL_DIR / "python"
+SERVICE_EXE     = INSTALL_DIR / "ThermalPrinterAPI.exe"
 
 
 # ---------------------------------------------------------------------------
@@ -53,15 +53,7 @@ def is_admin():
         return False
 
 
-def run_as_admin():
-    """Relance le meme exe avec les droits administrateur."""
-    ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", sys.executable, " ".join(sys.argv), None, 1
-    )
-    sys.exit(0)
-
-
-def run(cmd, check=True):
+def run(cmd):
     """Execute une commande et retourne (returncode, stdout, stderr)."""
     result = subprocess.run(
         cmd, capture_output=True, text=True, shell=True
@@ -80,12 +72,25 @@ def get_source_dir():
     return Path(__file__).parent
 
 
+def _get_short_path(path):
+    """Retourne le chemin court 8.3 Windows (sans espaces) via GetShortPathNameW."""
+    try:
+        buf = ctypes.create_unicode_buffer(512)
+        ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, 512)
+        short = buf.value
+        if short:
+            return short
+    except Exception:
+        pass
+    return str(path)
+
+
 # ---------------------------------------------------------------------------
 # Etapes d'installation
 # ---------------------------------------------------------------------------
 
 def step_copy_files(log):
-    """Copie les fichiers de l'application dans le dossier d'installation."""
+    """Copie ThermalPrinterAPI.exe et les ressources dans le dossier d'installation."""
     log("Copie des fichiers...")
     src = get_source_dir()
 
@@ -96,7 +101,10 @@ def step_copy_files(log):
         if config_file.exists():
             config_backup = config_file.read_text(encoding='utf-8')
 
-        shutil.rmtree(INSTALL_DIR)
+        try:
+            shutil.rmtree(INSTALL_DIR)
+        except Exception as e:
+            log(f"Avertissement nettoyage : {e}")
 
         if config_backup:
             INSTALL_DIR.mkdir(parents=True)
@@ -104,117 +112,60 @@ def step_copy_files(log):
 
     INSTALL_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Copier tous les fichiers/dossiers sources
-    for item in src.iterdir():
-        name = item.name
-        # Ignorer les dossiers temporaires PyInstaller et les fichiers inutiles
-        if name in ('__pycache__', '.claude', 'logs', 'static', '.git',
-                    'dist', 'build', '__init__.py'):
-            continue
-        dest = INSTALL_DIR / name
-        if item.is_dir():
-            shutil.copytree(item, dest, dirs_exist_ok=True,
-                           ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-        else:
-            shutil.copy2(item, dest)
+    # Fichiers a copier depuis la source embarquee
+    files_to_copy = ["ThermalPrinterAPI.exe", "logo.png", "icon.ico", "README.md"]
+    for fname in files_to_copy:
+        src_file = src / fname
+        if src_file.exists():
+            shutil.copy2(src_file, INSTALL_DIR / fname)
 
     # Creer les dossiers necessaires
     (INSTALL_DIR / "logs").mkdir(exist_ok=True)
     (INSTALL_DIR / "static").mkdir(exist_ok=True)
 
+    # Generer start.bat pour lancement manuel
+    (INSTALL_DIR / "start.bat").write_text(
+        f'@echo off\n'
+        f'echo Demarrage de {APP_DISPLAY}...\n'
+        f'"{SERVICE_EXE}"\n',
+        encoding='utf-8'
+    )
+
     log("Fichiers copies.")
 
 
-def step_install_dependencies(log):
-    """Installe les dependances pip dans le dossier d'installation."""
-    log("Installation des dependances Python...")
-
-    req_file = INSTALL_DIR / "requirements.txt"
-    if not req_file.exists():
-        log("requirements.txt introuvable, etape ignoree.")
-        return
-
-    # Chercher python dans l'ordre de preference
-    python_candidates = [
-        sys.executable,
-        r"C:\Python313\python.exe",
-        r"C:\Python312\python.exe",
-        r"C:\Python311\python.exe",
-        r"C:\Python310\python.exe",
-        r"C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python313\python.exe",
-    ]
-    # Ajouter Python depuis le PATH
-    code, out, _ = run("where python")
-    if code == 0:
-        for p in out.strip().splitlines():
-            python_candidates.insert(0, p.strip())
-
-    python_exe = None
-    for candidate in python_candidates:
-        candidate = os.path.expandvars(candidate)
-        if os.path.exists(candidate):
-            python_exe = candidate
-            break
-
-    if not python_exe:
-        log("Python introuvable — les dependances ne sont pas installees.")
-        log("Installez Python 3.8+ depuis python.org si l'API ne demarre pas.")
-        return
-
-    code, out, err = run(
-        f'"{python_exe}" -m pip install -r "{req_file}" --quiet'
-    )
-    if code == 0:
-        log("Dependances installees.")
-    else:
-        log(f"Avertissement dependances : {(err or out)[:200]}")
-
-
 def step_register_service(log):
-    """Enregistre et configure le service Windows."""
+    """Enregistre le service Windows via sc.exe — pas de Python requis."""
     log("Enregistrement du service Windows...")
 
     # Supprimer l'ancien service si present
-    run(f'net stop "{SERVICE_NAME}" >nul 2>&1')
+    run(f'net stop "{SERVICE_NAME}"')
     time.sleep(1)
-    run(f'sc delete "{SERVICE_NAME}" >nul 2>&1')
-    time.sleep(1)
+    run(f'sc delete "{SERVICE_NAME}"')
+    time.sleep(2)
 
-    # Trouver python pour lancer le service
-    python_candidates = [sys.executable]
-    code, out, _ = run("where python")
-    if code == 0:
-        for p in out.strip().splitlines():
-            python_candidates.insert(0, p.strip())
-
-    python_exe = None
-    for candidate in python_candidates:
-        if os.path.exists(os.path.expandvars(candidate)):
-            python_exe = os.path.expandvars(candidate)
-            break
-
-    if not python_exe:
-        python_exe = sys.executable
-
-    service_script = INSTALL_DIR / "service.py"
-    bin_path = f'"{python_exe}" "{service_script}" run'
-
-    code, out, err = run(
-        f'sc create "{SERVICE_NAME}" '
-        f'binPath= "{bin_path}" '
-        f'DisplayName= "{SERVICE_DISPLAY}" '
-        f'start= auto '
-        f'obj= LocalSystem'
-    )
-
-    if code != 0:
-        log(f"Erreur creation service (code {code}): {err or out}")
+    if not SERVICE_EXE.exists():
+        log(f"Erreur : ThermalPrinterAPI.exe introuvable dans {INSTALL_DIR}")
         return False
 
-    # Description du service
-    run(f'sc description "{SERVICE_NAME}" "{SERVICE_DESC}"')
+    # Chemin court 8.3 pour eviter les espaces dans binPath
+    # C:\Program Files -> C:\PROGRA~1 (pas d'espace)
+    exe_short = _get_short_path(str(SERVICE_EXE))
+    log(f"Binaire : {exe_short}")
 
-    # Redemarrage automatique en cas de crash
+    sc_cmd = (
+        f'sc create "{SERVICE_NAME}"'
+        f' binPath= "{exe_short}"'
+        f' DisplayName= "{SERVICE_DISPLAY}"'
+        f' start= auto'
+        f' obj= LocalSystem'
+    )
+    code, out, err = run(sc_cmd)
+    if code != 0:
+        log(f"Erreur creation service (code {code}) : {(err or out)[:200]}")
+        return False
+
+    run(f'sc description "{SERVICE_NAME}" "{SERVICE_DESC}"')
     run(f'sc failure "{SERVICE_NAME}" reset= 60 actions= restart/5000/restart/10000/restart/30000')
 
     log("Service enregistre.")
@@ -229,8 +180,8 @@ def step_start_service(log):
         log("Service demarre.")
         return True
     else:
-        log(f"Impossible de demarrer: {(err or out)[:150]}")
-        log("Verifiez les logs dans : C:\\Program Files\\ThermalPrinterAPI\\logs\\")
+        log(f"Impossible de demarrer : {(err or out)[:150]}")
+        log(f"Consultez : {INSTALL_DIR}\\logs\\")
         return False
 
 
@@ -238,7 +189,6 @@ def step_create_shortcut(log):
     """Cree un raccourci dans le menu Demarrer."""
     log("Creation du raccourci menu Demarrer...")
     try:
-        import winshell
         from win32com.client import Dispatch
 
         start_menu = Path(os.environ.get('PROGRAMDATA', r'C:\ProgramData'))
@@ -248,13 +198,16 @@ def step_create_shortcut(log):
         shortcut_path = str(start_menu / f"{APP_DISPLAY}.lnk")
         shell = Dispatch('WScript.Shell')
         shortcut = shell.CreateShortCut(shortcut_path)
-        shortcut.TargetPath = str(INSTALL_DIR / "start.bat")
+        shortcut.TargetPath = str(SERVICE_EXE)
         shortcut.WorkingDirectory = str(INSTALL_DIR)
         shortcut.Description = SERVICE_DESC
+        icon_path = INSTALL_DIR / "icon.ico"
+        if icon_path.exists():
+            shortcut.IconLocation = str(icon_path)
         shortcut.save()
         log("Raccourci cree.")
     except Exception as e:
-        log(f"Raccourci non cree ({e}) — ignoré.")
+        log(f"Raccourci non cree ({e}) — ignore.")
 
 
 def step_add_uninstaller(log):
@@ -282,34 +235,40 @@ class InstallerGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title(f"Installation — {APP_DISPLAY} v{APP_VERSION}")
-        self.root.geometry("520x420")
+        self.root.geometry("520x480")
         self.root.resizable(False, False)
         self.root.configure(bg="#1a1a2e")
 
         # Centrer la fenetre
         self.root.update_idletasks()
         x = (self.root.winfo_screenwidth() - 520) // 2
-        y = (self.root.winfo_screenheight() - 420) // 2
+        y = (self.root.winfo_screenheight() - 480) // 2
         self.root.geometry(f"+{x}+{y}")
 
         self._build_ui()
 
     def _build_ui(self):
-        bg = "#1a1a2e"
-        fg = "#ffffff"
+        bg     = "#1a1a2e"
         accent = "#6c5ce7"
 
-        # Titre
-        tk.Label(self.root, text=f"Thermal Printer API", font=("Arial", 18, "bold"),
-                 bg=bg, fg=accent).pack(pady=(20, 4))
-        tk.Label(self.root, text=f"Version {APP_VERSION} — Service Windows",
-                 font=("Arial", 10), bg=bg, fg="#a0a0a0").pack()
+        # Logo
+        try:
+            from PIL import Image, ImageTk
+            logo_path = get_source_dir() / "logo.png"
+            if logo_path.exists():
+                img = Image.open(logo_path).resize((72, 72), Image.LANCZOS)
+                self._logo_img = ImageTk.PhotoImage(img)
+                tk.Label(self.root, image=self._logo_img, bg=bg).pack(pady=(16, 4))
+        except Exception:
+            pass
 
-        # Dossier d'installation
+        tk.Label(self.root, text="Thermal Printer API",
+                 font=("Arial", 18, "bold"), bg=bg, fg=accent).pack(pady=(4, 4))
+        tk.Label(self.root, text=f"Version {APP_VERSION} — Service Windows autonome",
+                 font=("Arial", 10), bg=bg, fg="#a0a0a0").pack()
         tk.Label(self.root, text=f"Dossier : {INSTALL_DIR}",
                  font=("Arial", 9), bg=bg, fg="#a0a0a0").pack(pady=(10, 0))
 
-        # Barre de progression
         self.progress = ttk.Progressbar(self.root, length=460, mode='determinate')
         self.progress.pack(pady=(16, 0))
 
@@ -318,7 +277,6 @@ class InstallerGUI:
         style.configure("TProgressbar", troughcolor="#252541",
                         background=accent, thickness=18)
 
-        # Zone de logs
         frame = tk.Frame(self.root, bg="#252541", bd=1, relief=tk.FLAT)
         frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
 
@@ -327,7 +285,6 @@ class InstallerGUI:
                                 wrap=tk.WORD)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        # Bouton
         self.btn = tk.Button(self.root, text="  Installer  ",
                              font=("Arial", 11, "bold"),
                              bg=accent, fg="white", relief=tk.FLAT,
@@ -336,26 +293,28 @@ class InstallerGUI:
         self.btn.pack(pady=(0, 18))
 
     def log(self, message):
-        self.log_text.configure(state=tk.NORMAL)
-        self.log_text.insert(tk.END, f"  {message}\n")
-        self.log_text.see(tk.END)
-        self.log_text.configure(state=tk.DISABLED)
-        self.root.update()
+        def _update():
+            self.log_text.configure(state=tk.NORMAL)
+            self.log_text.insert(tk.END, f"  {message}\n")
+            self.log_text.see(tk.END)
+            self.log_text.configure(state=tk.DISABLED)
+        self.root.after(0, _update)
 
     def set_progress(self, value):
-        self.progress['value'] = value
-        self.root.update()
+        self.root.after(0, lambda: self.progress.configure(value=value))
 
     def _start_install(self):
         self.btn.configure(state=tk.DISABLED, text="Installation...")
+        import threading
+        threading.Thread(target=self._run_install, daemon=True).start()
 
+    def _run_install(self):
         steps = [
-            (10,  "Copie des fichiers",           step_copy_files),
-            (35,  "Installation des dependances", step_install_dependencies),
-            (65,  "Enregistrement du service",    step_register_service),
-            (80,  "Demarrage du service",          step_start_service),
-            (90,  "Raccourci menu Demarrer",       step_create_shortcut),
-            (95,  "Creation desinstallateur",      step_add_uninstaller),
+            (20,  "Copie des fichiers",        step_copy_files),
+            (55,  "Enregistrement du service", step_register_service),
+            (75,  "Demarrage du service",       step_start_service),
+            (90,  "Raccourci menu Demarrer",    step_create_shortcut),
+            (95,  "Creation desinstallateur",   step_add_uninstaller),
         ]
 
         success = True
@@ -366,16 +325,18 @@ class InstallerGUI:
                 if result is False:
                     success = False
             except Exception as e:
-                self.log(f"Erreur: {e}")
+                self.log(f"Erreur : {e}")
                 success = False
             self.set_progress(progress_val)
 
         self.set_progress(100)
+        self.root.after(0, lambda: self._finish_install(success))
 
+    def _finish_install(self, success):
         if success:
             self.log("")
             self.log("Installation terminee !")
-            self.log(f"API disponible sur http://localhost:5789")
+            self.log("API disponible sur http://localhost:5789")
             self.btn.configure(state=tk.NORMAL, text="  Fermer  ",
                                command=self.root.destroy, bg="#00b894")
             messagebox.showinfo(
@@ -399,7 +360,6 @@ class InstallerGUI:
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    # Demander les droits admin si necessaire
     if not is_admin():
         ctypes.windll.shell32.ShellExecuteW(
             None, "runas", sys.executable,

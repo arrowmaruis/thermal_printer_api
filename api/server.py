@@ -258,6 +258,8 @@ def create_app():
     # Configuration CORS depuis la config (ou valeurs par défaut)
     configured_origins = config.get('allowed_origins', [])
     origins = configured_origins if configured_origins else [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
         "https://hotelia.cloud"
@@ -665,6 +667,104 @@ def create_app():
         return jsonify({'status': 'error', 'message': f"Echec test BT vers {address}"}), 500
 
     # -----------------------------------------------------------------------
+    # Endpoints impression réseau (WiFi / Ethernet TCP/IP)
+    # -----------------------------------------------------------------------
+
+    @app.route('/network/test/<path:ip>')
+    def network_test_endpoint(ip):
+        """
+        Test d'impression TCP direct sur une imprimante réseau (WiFi/Ethernet).
+        Exemple: GET /network/test/192.168.10.104
+        Parametre optionnel: ?port=9100
+        """
+        from printer.printer_utils import print_via_network, print_test
+        tcp_port = request.args.get('port', 9100, type=int)
+        printer_width = request.args.get('width', '58mm')
+        printer_name_hint = f"network_{ip}"
+
+        commands = bytearray()
+        from printer.printer_utils import get_robust_init_command, get_robust_cut_command, safe_encode_french
+        encoding = 'ascii'
+        commands.extend(get_robust_init_command(printer_name_hint))
+        commands.extend(safe_encode_french(f"=== TEST RESEAU ===\n", encoding))
+        commands.extend(safe_encode_french(f"IP: {ip}:{tcp_port}\n", encoding))
+        commands.extend(safe_encode_french(f"Cafe francais\n", encoding))
+        commands.extend(safe_encode_french(f"Hotel de luxe\n", encoding))
+        commands.extend(safe_encode_french(f"15,50 EUR\n", encoding))
+        commands.extend(safe_encode_french(f"==================\n", encoding))
+        commands.extend(get_robust_cut_command(printer_name_hint))
+
+        success = print_via_network(ip, bytes(commands), tcp_port=tcp_port)
+        if success:
+            return jsonify({
+                'status': 'success',
+                'message': f"Test TCP envoye a {ip}:{tcp_port}",
+                'ip': ip,
+                'tcp_port': tcp_port,
+            })
+        return jsonify({
+            'status': 'error',
+            'message': f"Echec connexion TCP vers {ip}:{tcp_port}"
+        }), 500
+
+    @app.route('/network/print', methods=['POST'])
+    def network_print_endpoint():
+        """
+        Impression directe via TCP/IP (WiFi/Ethernet).
+
+        Body JSON:
+          {
+            "ip": "192.168.10.104",
+            "port": 9100,           // optionnel, defaut 9100
+            "type": "receipt" | "raw",
+            "data": { ... },        // si type=receipt
+            "text": "...",          // si type=raw
+            "receipt_type": "standard",
+            "printer_width": "58mm"
+          }
+        """
+        from printer.printer_utils import print_via_network, safe_encode_french
+        try:
+            data = request.json
+            if not data:
+                return jsonify({'status': 'error', 'message': 'Aucune donnee recue'}), 400
+
+            ip = data.get('ip')
+            if not ip:
+                return jsonify({'status': 'error', 'message': "'ip' requis"}), 400
+
+            tcp_port = data.get('port', 9100)
+            print_type = data.get('type', 'receipt')
+            printer_width = data.get('printer_width', config.get('default_printer_width', '58mm'))
+            encoding = 'ascii'
+
+            if print_type == 'receipt':
+                receipt_data = data.get('data', {})
+                receipt_type = data.get('receipt_type', 'standard')
+                raw_bytes = format_receipt(receipt_data, receipt_type, printer_width, encoding, f"network_{ip}")
+            elif print_type == 'raw':
+                raw_bytes = safe_encode_french(data.get('text', ''), encoding)
+            else:
+                return jsonify({'status': 'error', 'message': f"Type '{print_type}' non supporte"}), 400
+
+            success = print_via_network(ip, raw_bytes, tcp_port=tcp_port)
+            if success:
+                return jsonify({
+                    'status': 'success',
+                    'message': f"Impression TCP OK vers {ip}:{tcp_port}",
+                    'ip': ip,
+                    'tcp_port': tcp_port,
+                })
+            return jsonify({
+                'status': 'error',
+                'message': f"Echec impression TCP vers {ip}:{tcp_port}"
+            }), 500
+
+        except Exception as e:
+            logger.error(f"Erreur impression reseau: {e}")
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
+    # -----------------------------------------------------------------------
 
     @app.route('/test-immediate-cut/<int:printer_id>')
     def test_immediate_cut_endpoint(printer_id):
@@ -725,6 +825,8 @@ def run_api_server(app=None):
     print(f"   • POST /print : Impression ASCII avec conversion française automatique")
     print(f"   • GET  /encoding-test/<id> : Test de tous les encodages (ASCII recommandé)")
     print(f"   • GET  /encoding-info : Informations sur la configuration ASCII")
+    print(f"   • GET  /network/test/<ip> : 🆕 Test impression WiFi/Ethernet direct (TCP port 9100)")
+    print(f"   • POST /network/print : 🆕 Impression WiFi/Ethernet direct (TCP)")
     print(f"")
     print(f"🎯 ASCII universel activé pour TOUTES les imprimantes")
     print(f"🔧 Conversion française automatique: café → cafe, hôtel → hotel, €15,50 → EUR15,50")

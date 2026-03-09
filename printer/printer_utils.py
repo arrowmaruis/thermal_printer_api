@@ -40,10 +40,26 @@ def image_to_escpos(image_source, max_width_px=384, align='center'):
     try:
         # --- Charger l'image ---
         if isinstance(image_source, str):
+            # Supprimer le prefixe data: URL si present (ex: "data:image/png;base64,...")
+            if image_source.startswith('data:'):
+                if ',' in image_source:
+                    image_source = image_source.split(',', 1)[1]
+                else:
+                    logger.error("Format data URL invalide (pas de virgule)")
+                    return None
             try:
                 img_bytes = base64.b64decode(image_source)
+                # Verifier que les donnees decoded sont bien une image et non du HTML
+                if img_bytes[:9].lower().startswith((b'<!doctype', b'<html', b'<head', b'<?xml')):
+                    logger.error(
+                        "Le champ 'image' contient du HTML au lieu d'une image. "
+                        "Verifiez que le client envoie uniquement la partie base64 "
+                        "(sans le prefixe 'data:image/...;base64,')"
+                    )
+                    return None
                 img = Image.open(io.BytesIO(img_bytes))
             except Exception:
+                # image_source n'est pas du base64 valide : traiter comme chemin fichier
                 img = Image.open(image_source)
         elif isinstance(image_source, bytes):
             try:
@@ -143,23 +159,22 @@ def get_codepage_command(encoding):
         bytes: Commande ESC/POS pour la page de codes
     """
     # Commandes ESC/POS pour changer les pages de codes
-    ESC_SET_CODEPAGE_PC437 = b'\x1b\x74\x00'      # ESC t 0  - PC437 USA (optimal pour ASCII)
-    ESC_SET_CODEPAGE_WPC1252 = b'\x1b\x74\x10'    # ESC t 16 - Windows-1252 (cp1252)
-    ESC_SET_CODEPAGE_PC858 = b'\x1b\x74\x13'      # ESC t 19 - PC858 avec €
+    ESC_SET_CODEPAGE_PC437 = b'\x1b\x74\x00'      # ESC t 0  - PC437 USA
+    ESC_SET_CODEPAGE_PC858 = b'\x1b\x74\x0e'      # ESC t 14 - PC858 avec € (index sur POS-58)
     ESC_SET_CODEPAGE_PC850 = b'\x1b\x74\x02'      # ESC t 2  - PC850 Europe
     ESC_SET_CODEPAGE_LATIN1 = b'\x1b\x74\x03'     # ESC t 3  - ISO 8859-1
-    
+
     # Table de correspondance encodage → commande ESC/POS
-    # ASCII utilise PC437 par défaut (le plus compatible)
+    # PC858 par défaut : couvre les accents français ET le symbole € (0xD5)
     codepage_commands = {
-        'ascii': ESC_SET_CODEPAGE_PC437,        # ASCII → PC437 (optimal)
-        'cp437': ESC_SET_CODEPAGE_PC437,        # PC437 natif
-        'cp1252': ESC_SET_CODEPAGE_WPC1252,     # Windows-1252
-        'cp850': ESC_SET_CODEPAGE_PC850,        # PC850 Europe
-        'cp858': ESC_SET_CODEPAGE_PC858,        # PC858 avec €
-        'latin1': ESC_SET_CODEPAGE_LATIN1,      # ISO 8859-1
-        'auto': ESC_SET_CODEPAGE_PC437,         # Auto → PC437 (ASCII compatible)
-        'utf-8': ESC_SET_CODEPAGE_PC437         # UTF-8 → PC437 avec conversion ASCII
+        'ascii':   ESC_SET_CODEPAGE_PC858,      # ASCII → PC858 (safe_encode_french encode en cp858)
+        'cp437':   ESC_SET_CODEPAGE_PC437,      # PC437 natif
+        'cp1252':  ESC_SET_CODEPAGE_PC858,      # CP1252 → utiliser PC858 (€ supporté)
+        'cp850':   ESC_SET_CODEPAGE_PC850,      # PC850 Europe
+        'cp858':   ESC_SET_CODEPAGE_PC858,      # PC858 avec €
+        'latin1':  ESC_SET_CODEPAGE_LATIN1,     # ISO 8859-1
+        'auto':    ESC_SET_CODEPAGE_PC858,      # Auto → PC858
+        'utf-8':   ESC_SET_CODEPAGE_PC858       # UTF-8 → PC858 avec conversion
     }
     
     # Retourner la commande appropriée (PC437 par défaut pour ASCII)
@@ -213,7 +228,9 @@ def convert_french_to_ascii_smart(text):
         'æ': 'ae', 'Æ': 'AE',        # Moins fréquent mais important
         
         # Symboles monétaires et spéciaux
-        '€': 'EUR', '£': 'GBP', '¢': 'c', '$': 'USD',
+        # € géré par cp858 (0xD5), ici en fallback ASCII uniquement
+        # NOTE: $ est ASCII standard, pas de conversion nécessaire
+        '€': 'EUR', '£': 'GBP', '¢': 'c',
         '°': 'deg', '²': '2', '³': '3',
         '½': '1/2', '¼': '1/4', '¾': '3/4',
         '±': '+/-', '×': 'x', '÷': '/',
@@ -228,6 +245,10 @@ def convert_french_to_ascii_smart(text):
         '…': '...',                    # Points de suspension
         '•': '*', '◦': '-',           # Puces
         
+        # Flèches
+        '→': '->', '←': '<-', '↑': '^', '↓': 'v',
+        '⇒': '=>', '⇐': '<=', '⟶': '->', '⟵': '<-',
+
         # Caractères mathématiques
         '∞': 'infini', '≤': '<=', '≥': '>=',
         '≠': '!=', '≈': '~=',
@@ -425,15 +446,16 @@ def get_robust_init_command(printer_name=None):
         bytes: Commande d'initialisation robuste
     """
     robust_init = bytearray()
-    
-    # Étape 1: Réinitialisation complète
+
+    # Réinitialisation complète
     robust_init.extend(b'\x1b\x40')          # ESC @ - Reset complet
-    
-    # Étape 2: Status et préparation
-    robust_init.extend(b'\x10\x04\x01')      # DLE EOT 1 - Status de l'imprimante
-    robust_init.extend(b'\x1d\x61\x00')      # GS a 0 - Activer l'auto-cut
-    
-    # Étape 3: Configuration du papier
+
+    # Activer le code page PC858 :
+    # - € = 0xD5, accents français (é, è, à, ç, ô, ù...) supportés
+    # - Sur cette imprimante POS-58 : PC858 = index 14 (lu depuis le ticket test interne)
+    robust_init.extend(b'\x1b\x74\x0e')      # ESC t 14 - Code page PC858 (€ = 0xD5)
+
+    # Avancer une ligne pour s'assurer que l'imprimante est prête
     robust_init.extend(b'\x1b\x64\x01')      # ESC d 1 - Avancer une ligne
     
     if printer_name:
@@ -451,31 +473,15 @@ def get_robust_cut_command(printer_name=None):
     Returns:
         bytes: Commande de coupe immédiate
     """
-    # SOLUTION pour le problème de coupe décalée :
-    # Le problème : l'imprimante garde la commande de coupe en tampon
-    # La solution : forcer le flush du tampon ET coupe immédiate
-    
     robust_cut = bytearray()
-    
-    # Étape 1: Avancer suffisamment de lignes pour s'assurer qu'il y a du papier
-    robust_cut.extend(b'\x1b\x64\x03')      # ESC d 3 - Avancer 3 lignes (important!)
-    
-    # Étape 2: Forcer le vidage du tampon d'impression (CRITIQUE)
-    robust_cut.extend(b'\x0c')              # Form Feed - Force le flush du tampon
-    robust_cut.extend(b'\x10\x04\x01')      # DLE EOT 1 - Demander status (force la communication)
-    
-    # Étape 3: Coupe immédiate et forcée
-    robust_cut.extend(b'\x1d\x56\x00')      # GS V 0 - Coupe complète IMMÉDIATE
-    
-    # Étape 4: Alternative avec coupe partielle si la complète ne marche pas
-    robust_cut.extend(b'\x1d\x56\x01')      # GS V 1 - Coupe partielle
-    
-    # Étape 5: FORCER l'exécution avec des commandes de contrôle
-    robust_cut.extend(b'\x1b\x64\x01')      # ESC d 1 - Avancer 1 ligne (force l'action)
-    robust_cut.extend(b'\x1d\x56\x41')      # GS V A - Coupe avec avance (dernière tentative)
-    
-    # Étape 6: Finaliser avec flush final
-    robust_cut.extend(b'\x0c')              # Form Feed final pour forcer l'action
+
+    # Avancer suffisamment pour que le texte soit au-dessus de la lame
+    robust_cut.extend(b'\x1b\x64\x05')      # ESC d 5 - Avancer 5 lignes
+
+    # GS V 65 0 : coupe complète avec n=0 (forme 2-octets, universelle ESC/POS)
+    robust_cut.extend(b'\x1d\x56\x41\x00')  # GS V 65 0 - Coupe complète
+    # GS V 66 0 : coupe partielle avec n=0 (fallback pour imprimantes sans coupe complète)
+    robust_cut.extend(b'\x1d\x56\x42\x00')  # GS V 66 0 - Coupe partielle
     
     if printer_name:
         logger.debug(f"Commande de coupe IMMÉDIATE générée pour {printer_name}")
@@ -497,20 +503,22 @@ def safe_encode_french(text, encoding='ascii', printer_name=None):
     """
     if not text:
         return b''
-    
-    # NOUVEAU: ASCII universel par défaut
-    logger.debug(f"Encodage ASCII universel pour: {printer_name or 'imprimante'}")
-    
-    # Conversion française intelligente
-    text_ascii = convert_french_to_ascii_smart(text)
-    
-    # Encoder en ASCII avec gestion d'erreurs robuste
+
+    # PC858 est activé via ESC t 14 dans get_robust_init_command.
+    # On encode directement en CP858 : accents français ET € (0xD5) sont supportés.
+    # Normaliser les espaces insécables (\u202f narrow no-break space de toLocaleString('fr-FR'),
+    # \u00a0 non-breaking space) en espace ASCII avant encodage.
+    text = text.replace('\u202f', ' ').replace('\u00a0', ' ')
     try:
-        return text_ascii.encode('ascii', errors='strict')
-    except UnicodeEncodeError:
-        # Si même après conversion il y a des problèmes, forcer le remplacement
-        logger.warning(f"Caractères ASCII problématiques dans: '{text[:30]}...', remplacement forcé")
-        return text_ascii.encode('ascii', errors='replace')
+        return text.encode('cp858')
+    except (UnicodeEncodeError, LookupError):
+        # Fallback ASCII avec conversion française pour les caractères hors CP858
+        ascii_text = convert_french_to_ascii_smart(text)
+        try:
+            return ascii_text.encode('ascii', errors='strict')
+        except UnicodeEncodeError:
+            logger.warning(f"Caractères non encodables dans: '{text[:30]}...', remplacement forcé")
+            return ascii_text.encode('ascii', errors='replace')
 
 def print_raw(printer_name, data):
     """Imprime des donnees brutes via le spouleur Windows (USB, reseau, BT avec driver)."""
@@ -553,10 +561,32 @@ def print_raw_com(com_port, data, baudrate=9600):
         return False
 
 
+def print_via_network(host, data, tcp_port=9100, timeout=10):
+    """Imprime des donnees brutes via TCP/IP directement sur le port 9100 (imprimantes WiFi/Ethernet)."""
+    import socket
+    import time
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((host, tcp_port))
+        sock.sendall(data)
+        # Signaler la fin d'envoi et attendre que l'imprimante traite les données
+        # avant de fermer la connexion (évite la troncature des données)
+        sock.shutdown(socket.SHUT_WR)
+        time.sleep(0.8)
+        sock.close()
+        logger.info(f"Impression reussie (reseau TCP) sur {host}:{tcp_port}")
+        return True
+    except Exception as e:
+        logger.error(f"Erreur impression reseau {host}:{tcp_port}: {e}")
+        return False
+
+
 def print_smart(printer_info, data):
     """
     Route l'impression vers le bon canal selon connection_type :
       - 'bluetooth_com' : envoie via port COM (pyserial)
+      - 'network'       : envoie via TCP/IP direct sur port 9100
       - tous les autres  : envoie via le spouleur Windows (win32print)
 
     Args:
@@ -571,6 +601,14 @@ def print_smart(printer_info, data):
         com_port = printer_info.get('com_port') or printer_info.get('port')
         logger.info(f"Routage impression → Bluetooth COM {com_port}")
         return print_raw_com(com_port, data)
+    elif conn == 'network':
+        ip = printer_info.get('ip') or printer_info.get('network_ip')
+        tcp_port = printer_info.get('tcp_port', 9100)
+        if not ip:
+            logger.error("connection_type=network mais pas d'IP configuree dans printer_info")
+            return False
+        logger.info(f"Routage impression → réseau TCP {ip}:{tcp_port}")
+        return print_via_network(ip, data, tcp_port=tcp_port)
     else:
         logger.info(f"Routage impression → spouleur Windows ({conn}): {printer_info['name']}")
         return print_raw(printer_info['name'], data)
