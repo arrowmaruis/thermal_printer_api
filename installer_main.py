@@ -40,6 +40,7 @@ SERVICE_DISPLAY = "Thermal Printer API - Hotelia"
 SERVICE_DESC    = "API d'impression thermique POS. Demarre automatiquement au demarrage de Windows."
 INSTALL_DIR     = Path(r"C:\Program Files\ThermalPrinterAPI")
 SERVICE_EXE     = INSTALL_DIR / "ThermalPrinterAPI.exe"
+CONFIG_EXE      = INSTALL_DIR / "ThermalPrinterAPI_Config.exe"
 
 
 # ---------------------------------------------------------------------------
@@ -53,12 +54,17 @@ def is_admin():
         return False
 
 
-def run(cmd):
+def run(cmd, timeout=30):
     """Execute une commande et retourne (returncode, stdout, stderr)."""
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, shell=True
-    )
-    return result.returncode, result.stdout, result.stderr
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, shell=True,
+            timeout=timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        return 1, "", f"Commande expiree apres {timeout}s"
 
 
 def get_source_dir():
@@ -113,15 +119,22 @@ def step_copy_files(log):
     INSTALL_DIR.mkdir(parents=True, exist_ok=True)
 
     # Fichiers a copier depuis la source embarquee
-    files_to_copy = ["ThermalPrinterAPI.exe", "logo.png", "icon.ico", "README.md"]
+    files_to_copy = ["ThermalPrinterAPI.exe", "ThermalPrinterAPI_Config.exe", "logo.png", "icon.ico", "README.md"]
     for fname in files_to_copy:
         src_file = src / fname
         if src_file.exists():
             shutil.copy2(src_file, INSTALL_DIR / fname)
 
-    # Creer les dossiers necessaires
-    (INSTALL_DIR / "logs").mkdir(exist_ok=True)
+    # Creer les dossiers necessaires dans Program Files
     (INSTALL_DIR / "static").mkdir(exist_ok=True)
+
+    # Creer et ouvrir les permissions du dossier ProgramData (config + logs partagés)
+    import os as _os
+    programdata = Path(_os.environ.get('PROGRAMDATA', r'C:\ProgramData')) / 'ThermalPrinterAPI'
+    logs_dir    = programdata / 'logs'
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    # Accorder le controle total aux utilisateurs pour eviter les erreurs de permission
+    run(f'icacls "{programdata}" /grant "Users:(OI)(CI)F" /T /Q', timeout=15)
 
     # Generer start.bat pour lancement manuel
     (INSTALL_DIR / "start.bat").write_text(
@@ -139,9 +152,9 @@ def step_register_service(log):
     log("Enregistrement du service Windows...")
 
     # Supprimer l'ancien service si present
-    run(f'net stop "{SERVICE_NAME}"')
+    run(f'net stop "{SERVICE_NAME}"', timeout=15)
     time.sleep(1)
-    run(f'sc delete "{SERVICE_NAME}"')
+    run(f'sc delete "{SERVICE_NAME}"', timeout=10)
     time.sleep(2)
 
     if not SERVICE_EXE.exists():
@@ -173,41 +186,94 @@ def step_register_service(log):
 
 
 def step_start_service(log):
-    """Demarre le service."""
+    """
+    Demarre le service de facon asynchrone puis verifie son etat.
+
+    On evite net start (bloquant jusqu'a RUNNING) car le binaire --onefile
+    PyInstaller extrait ses fichiers dans %TEMP% avant de demarrer, ce qui
+    peut prendre 15-30 s et figer l'installateur en attendant.
+    """
     log("Demarrage du service...")
-    code, out, err = run(f'net start "{SERVICE_NAME}"')
-    if code == 0:
+
+    # Lancer sc start sans attendre (Popen non-bloquant)
+    subprocess.Popen(
+        f'sc start "{SERVICE_NAME}"',
+        shell=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+    # Sonder l'etat toutes les 5 s pendant 90 s max
+    for attempt in range(18):
+        time.sleep(5)
+        _, out, _ = run(f'sc query "{SERVICE_NAME}"', timeout=10)
+        if "RUNNING" in out:
+            log("Service demarre avec succes.")
+            return True
+        elapsed = (attempt + 1) * 5
+        log(f"  Attente du service... {elapsed}s")
+
+    # Verification finale
+    _, out, _ = run(f'sc query "{SERVICE_NAME}"', timeout=10)
+    if "RUNNING" in out:
         log("Service demarre.")
         return True
-    else:
-        log(f"Impossible de demarrer : {(err or out)[:150]}")
-        log(f"Consultez : {INSTALL_DIR}\\logs\\")
-        return False
+
+    log("Avertissement : le service est lent a demarrer.")
+    log("Il demarrera automatiquement au prochain redemarrage Windows.")
+    log(f"Logs disponibles dans : {INSTALL_DIR}\\logs\\")
+    return True  # Ne pas bloquer l'installation pour ca
+
+
+def _make_shortcut(shell, target, lnk_path, description, icon_path=None):
+    """Cree un raccourci .lnk via WScript.Shell."""
+    sc = shell.CreateShortCut(str(lnk_path))
+    sc.TargetPath = str(target)
+    sc.WorkingDirectory = str(INSTALL_DIR)
+    sc.Description = description
+    if icon_path and Path(icon_path).exists():
+        sc.IconLocation = str(icon_path)
+    sc.save()
 
 
 def step_create_shortcut(log):
-    """Cree un raccourci dans le menu Demarrer."""
-    log("Creation du raccourci menu Demarrer...")
+    """Cree des raccourcis dans le menu Demarrer et sur le bureau."""
+    log("Creation des raccourcis...")
     try:
         from win32com.client import Dispatch
 
+        shell     = Dispatch('WScript.Shell')
+        icon_path = INSTALL_DIR / "icon.ico"
+
+        # --- Menu Demarrer ---
         start_menu = Path(os.environ.get('PROGRAMDATA', r'C:\ProgramData'))
-        start_menu = start_menu / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        start_menu = start_menu / "Microsoft" / "Windows" / "Start Menu" / "Programs" / APP_DISPLAY
         start_menu.mkdir(parents=True, exist_ok=True)
 
-        shortcut_path = str(start_menu / f"{APP_DISPLAY}.lnk")
-        shell = Dispatch('WScript.Shell')
-        shortcut = shell.CreateShortCut(shortcut_path)
-        shortcut.TargetPath = str(SERVICE_EXE)
-        shortcut.WorkingDirectory = str(INSTALL_DIR)
-        shortcut.Description = SERVICE_DESC
-        icon_path = INSTALL_DIR / "icon.ico"
-        if icon_path.exists():
-            shortcut.IconLocation = str(icon_path)
-        shortcut.save()
-        log("Raccourci cree.")
+        _make_shortcut(shell,
+                       CONFIG_EXE,
+                       start_menu / f"Pilot Hotelia v{APP_VERSION}.lnk",
+                       "Interface de configuration des imprimantes thermiques",
+                       icon_path)
+
+        _make_shortcut(shell,
+                       SERVICE_EXE,
+                       start_menu / "Demarrer le service.lnk",
+                       SERVICE_DESC,
+                       icon_path)
+
+        # --- Bureau ---
+        desktop = Path(shell.SpecialFolders("Desktop"))
+        _make_shortcut(shell,
+                       CONFIG_EXE,
+                       desktop / f"Pilot Hotelia v{APP_VERSION}.lnk",
+                       "Configurer les imprimantes thermiques",
+                       icon_path)
+
+        log("Raccourcis crees (menu Demarrer + bureau).")
     except Exception as e:
-        log(f"Raccourci non cree ({e}) — ignore.")
+        log(f"Raccourcis non crees ({e}) — ignore.")
 
 
 def step_add_uninstaller(log):
@@ -332,17 +398,46 @@ class InstallerGUI:
         self.set_progress(100)
         self.root.after(0, lambda: self._finish_install(success))
 
+    def _open_config_gui(self):
+        """Lance le dashboard de configuration des imprimantes."""
+        try:
+            subprocess.Popen(
+                str(CONFIG_EXE),
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Impossible d'ouvrir la configuration :\n{e}")
+
     def _finish_install(self, success):
         if success:
             self.log("")
             self.log("Installation terminee !")
             self.log("API disponible sur http://localhost:5789")
-            self.btn.configure(state=tk.NORMAL, text="  Fermer  ",
-                               command=self.root.destroy, bg="#00b894")
+            self.log("Raccourci cree sur le bureau.")
+
+            # Bouton principal : configurer les imprimantes
+            self.btn.configure(
+                state=tk.NORMAL,
+                text="  Configurer les imprimantes  ",
+                command=self._open_config_gui,
+                bg="#6c5ce7",
+            )
+
+            # Bouton secondaire : fermer
+            close_btn = tk.Button(
+                self.root, text="  Fermer  ",
+                font=("Arial", 10),
+                bg="#444466", fg="white", relief=tk.FLAT,
+                activebackground="#333355", activeforeground="white",
+                cursor="hand2", command=self.root.destroy,
+            )
+            close_btn.pack(pady=(0, 8))
+
             messagebox.showinfo(
                 "Installation reussie",
                 f"{APP_DISPLAY} est installe et demarre automatiquement avec Windows.\n\n"
-                f"API accessible sur :\nhttp://localhost:5789"
+                f"API accessible sur :\nhttp://localhost:5789\n\n"
+                f"Cliquez sur 'Configurer les imprimantes' pour choisir votre imprimante par defaut."
             )
         else:
             self.log("")

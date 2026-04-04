@@ -673,11 +673,12 @@ class ModernApp(tk.Tk):
     
     def load_logs(self):
         """Charger et afficher les journaux"""
-        log_dir = 'logs'
+        from utils.config import _LOG_DIR
+        log_dir = _LOG_DIR
         if not os.path.exists(log_dir):
             self.log_text.insert(tk.END, "Aucun fichier journal trouvé.")
             return
-        
+
         # Trouver le fichier journal le plus récent
         log_files = [f for f in os.listdir(log_dir) if f.startswith('imprimante_api_')]
         

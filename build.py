@@ -32,7 +32,10 @@ BUILD_DIR    = PROJECT_DIR / "build"
 SERVICE_EXE_NAME  = "ThermalPrinterAPI"        # le serveur Flask
 INSTALLER_NAME    = "ThermalPrinterAPI_Setup"  # l'installateur
 
+CONFIG_GUI_NAME   = "ThermalPrinterAPI_Config"    # le dashboard de configuration
+
 SERVICE_EXE_PATH  = DIST_DIR / f"{SERVICE_EXE_NAME}.exe"
+CONFIG_GUI_PATH   = DIST_DIR / f"{CONFIG_GUI_NAME}.exe"
 INSTALLER_PATH    = DIST_DIR / f"{INSTALLER_NAME}.exe"
 
 
@@ -51,7 +54,7 @@ def check_pyinstaller():
 
 def clean():
     """Supprime les anciens artifacts (gere les fichiers verrouilles)."""
-    for name in (SERVICE_EXE_NAME, INSTALLER_NAME):
+    for name in (SERVICE_EXE_NAME, CONFIG_GUI_NAME, INSTALLER_NAME):
         old = DIST_DIR / f"{name}.exe"
         if old.exists():
             for suffix in ('.old', '.old2', '.old3'):
@@ -97,10 +100,11 @@ def run_pyinstaller(args):
 
 def build_service_exe():
     print("\n" + "=" * 60)
-    print("  Etape 1/2 : ThermalPrinterAPI.exe (serveur Flask autonome)")
+    print("  Etape 1/3 : ThermalPrinterAPI.exe (serveur Flask autonome)")
     print("=" * 60)
 
-    icon_path = PROJECT_DIR / "icon.ico"
+    icon_path     = PROJECT_DIR / "icon.ico"
+    manifest_path = PROJECT_DIR / "manifest_service.xml"
 
     args = [
         "--onefile",
@@ -127,6 +131,8 @@ def build_service_exe():
 
     if icon_path.exists():
         args.append(f"--icon={icon_path}")
+    if manifest_path.exists():
+        args.append(f"--manifest={manifest_path}")
 
     args.append(str(PROJECT_DIR / "service_exe.py"))
 
@@ -141,19 +147,78 @@ def build_service_exe():
 
 
 # ---------------------------------------------------------------------------
-# Etape 2 : ThermalPrinterAPI_Setup.exe (installateur)
+# Etape 2 : ThermalPrinterAPI_Config.exe (dashboard de configuration)
+# ---------------------------------------------------------------------------
+
+def build_config_gui_exe():
+    print("\n" + "=" * 60)
+    print("  Etape 2/3 : ThermalPrinterAPI_Config.exe (interface graphique)")
+    print("=" * 60)
+
+    icon_path     = PROJECT_DIR / "icon.ico"
+    manifest_path = PROJECT_DIR / "manifest_gui.xml"
+
+    args = [
+        "--onefile",
+        "--windowed",          # pas de console noire (GUI tkinter)
+        "--clean",
+        f"--name={CONFIG_GUI_NAME}",
+        f"--distpath={DIST_DIR}",
+        f"--workpath={BUILD_DIR / 'config_gui'}",
+        # Modules Python a embarquer
+        "--add-data", f"{PROJECT_DIR / 'gui'};gui",
+        "--add-data", f"{PROJECT_DIR / 'utils'};utils",
+        "--add-data", f"{PROJECT_DIR / 'printer'};printer",
+        "--add-data", f"{PROJECT_DIR / 'api'};api",
+        # Imports caches
+        "--hidden-import=tkinter",
+        "--hidden-import=tkinter.ttk",
+        "--hidden-import=tkinter.font",
+        "--hidden-import=tkinter.messagebox",
+        "--hidden-import=win32print",
+        "--hidden-import=PIL",
+        "--hidden-import=PIL.Image",
+        "--hidden-import=PIL.ImageTk",
+        "--hidden-import=serial",
+        "--hidden-import=serial.tools.list_ports",
+        "--hidden-import=flask",
+        "--hidden-import=flask_cors",
+        "--hidden-import=werkzeug",
+    ]
+
+    if icon_path.exists():
+        args.append(f"--icon={icon_path}")
+    if manifest_path.exists():
+        args.append(f"--manifest={manifest_path}")
+
+    args.append(str(PROJECT_DIR / "gui_main.py"))
+
+    run_pyinstaller(args)
+
+    if CONFIG_GUI_PATH.exists():
+        size_mb = CONFIG_GUI_PATH.stat().st_size / 1024 / 1024
+        print(f"\n  OK : {CONFIG_GUI_PATH}  ({size_mb:.1f} MB)")
+    else:
+        print("\nEchec : ThermalPrinterAPI_Config.exe introuvable.")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Etape 3 : ThermalPrinterAPI_Setup.exe (installateur)
 # ---------------------------------------------------------------------------
 
 def build_installer_exe():
     print("\n" + "=" * 60)
-    print("  Etape 2/2 : ThermalPrinterAPI_Setup.exe (installateur)")
+    print("  Etape 3/3 : ThermalPrinterAPI_Setup.exe (installateur)")
     print("=" * 60)
 
-    icon_path = PROJECT_DIR / "icon.ico"
+    icon_path     = PROJECT_DIR / "icon.ico"
+    manifest_path = PROJECT_DIR / "manifest_setup.xml"
 
-    # L'installateur embarque le binaire de service + logo + icone
+    # L'installateur embarque : service exe + config GUI exe + ressources
     add_datas = [
         "--add-data", f"{SERVICE_EXE_PATH};.",
+        "--add-data", f"{CONFIG_GUI_PATH};.",
     ]
     for fname in ("logo.png", "icon.ico", "README.md"):
         f = PROJECT_DIR / fname
@@ -180,6 +245,8 @@ def build_installer_exe():
 
     if icon_path.exists():
         args.append(f"--icon={icon_path}")
+    if manifest_path.exists():
+        args.append(f"--manifest={manifest_path}")
 
     args.append(str(PROJECT_DIR / "installer_main.py"))
 
@@ -206,6 +273,7 @@ def build():
     clean()
 
     build_service_exe()
+    build_config_gui_exe()
     build_installer_exe()
 
     print("\n" + "=" * 60)

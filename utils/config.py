@@ -6,13 +6,24 @@ import sys
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 
 # Configuration
 PORT = 5789
 HOST = '0.0.0.0'  # Accessible depuis n'importe quelle machine du réseau
 APP_NAME = "ImprimanteAPI"
 VERSION = "1.0.0"
-CONFIG_FILE = "printer_config.json"
+
+# ---------------------------------------------------------------------------
+# Dossier de donnees partage — writable par tous les utilisateurs ET par
+# le service LocalSystem. Evite les erreurs "Permission denied" quand le GUI
+# est lance depuis un raccourci bureau sans droits administrateur.
+# ---------------------------------------------------------------------------
+_DATA_DIR = Path(os.environ.get('PROGRAMDATA', r'C:\ProgramData')) / 'ThermalPrinterAPI'
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+CONFIG_FILE = str(_DATA_DIR / "printer_config.json")
+_LOG_DIR    = str(_DATA_DIR / "logs")
 
 # Configuration globale optimisée pour ASCII par défaut
 config = {
@@ -63,21 +74,55 @@ config = {
     "debug_encoding": False                   # Mode debug pour l'encodage
 }
 
-def setup_logging():
-    """Configure le système de journalisation avec support UTF-8"""
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
+def _resolve_log_dir():
+    """
+    Retourne un dossier de logs accessible en ecriture.
+    Priorite : ProgramData → LocalAppData → dossier temporaire.
+    """
+    candidates = [
+        _LOG_DIR,
+        os.path.join(os.environ.get('LOCALAPPDATA', ''), 'ThermalPrinterAPI', 'logs'),
+        os.path.join(os.environ.get('TEMP', ''), 'ThermalPrinterAPI', 'logs'),
+    ]
+    for d in candidates:
+        if not d:
+            continue
+        try:
+            os.makedirs(d, exist_ok=True)
+            # Verifier que l'ecriture est possible
+            test = os.path.join(d, '.write_test')
+            with open(test, 'w') as f:
+                f.write('')
+            os.unlink(test)
+            return d
+        except PermissionError:
+            continue
+    return None  # En dernier recours : log console uniquement
 
-    log_file = f'logs/imprimante_api_{datetime.now().strftime("%Y%m%d")}.log'
-    
-    # Configuration du logging avec encodage UTF-8
+
+def setup_logging():
+    """Configure le systeme de journalisation avec support UTF-8."""
+    handlers = []
+
+    # StreamHandler (console) — toujours present sauf si stdout n'existe pas
+    try:
+        handlers.append(logging.StreamHandler(sys.stdout))
+    except Exception:
+        pass
+
+    # FileHandler — dans le premier dossier accessible en ecriture
+    log_dir = _resolve_log_dir()
+    if log_dir:
+        log_file = os.path.join(log_dir, f'imprimante_api_{datetime.now().strftime("%Y%m%d")}.log')
+        try:
+            handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
+        except Exception:
+            pass
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file, encoding='utf-8'),
-            logging.StreamHandler(sys.stdout)
-        ]
+        handlers=handlers or [logging.NullHandler()],
     )
     
     # Configurer l'encodage de la console pour Windows
