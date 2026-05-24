@@ -255,17 +255,74 @@ def create_app():
     """Crée et configure l'application Flask"""
     app = Flask(__name__, static_folder='static')
 
-    # Configuration CORS depuis la config (ou valeurs par défaut)
-    configured_origins = config.get('allowed_origins', [])
-    origins = configured_origins if configured_origins else [
+    import re
+
+    # Origines toujours autorisées (ne peuvent pas être supprimées par la config)
+    _FIXED_ORIGINS = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
-        "https://hotelia.cloud"
+        re.compile(r"https://.*\.hotelia\.cloud"),
+        re.compile(r"https://hotelia\.cloud"),
     ]
+    # Merger avec les origines configurées par l'utilisateur (sans doublons)
+    configured_origins = config.get('allowed_origins', [])
+    origins = _FIXED_ORIGINS + [o for o in configured_origins if o not in _FIXED_ORIGINS]
 
     CORS(app, resources={r"/*": {"origins": origins}}, supports_credentials=True)
+
+    def _origin_allowed(origin):
+        """Vérifie si l'origine est dans la liste (string ou regex)."""
+        for o in origins:
+            if hasattr(o, 'match'):
+                if o.match(origin):
+                    return True
+            elif o == origin:
+                return True
+        return False
+
+    # -------------------------------------------------------------------------
+    # Private Network Access (PNA) — Chrome 94+ bloque localhost depuis HTTPS
+    # Le preflight OPTIONS doit etre intercepte AVANT flask_cors pour que
+    # Access-Control-Allow-Private-Network soit present dans la reponse.
+    # -------------------------------------------------------------------------
+    @app.before_request
+    def handle_pna_preflight():
+        """
+        Intercepte le preflight PNA envoye par Chrome avant toute requete
+        vers une adresse loopback (localhost) depuis une origine publique HTTPS.
+        Chrome envoie : OPTIONS + Access-Control-Request-Private-Network: true
+        On repond : 204 + Access-Control-Allow-Private-Network: true
+        """
+        if request.method != 'OPTIONS':
+            return
+        origin = request.headers.get('Origin', '')
+        if not _origin_allowed(origin):
+            return
+        if not request.headers.get('Access-Control-Request-Private-Network'):
+            return
+
+        response = app.make_response(('', 204))
+        response.headers['Access-Control-Allow-Origin']          = origin
+        response.headers['Access-Control-Allow-Private-Network'] = 'true'
+        response.headers['Access-Control-Allow-Credentials']     = 'true'
+        response.headers['Access-Control-Allow-Methods']         = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers']         = (
+            'Content-Type, X-API-Key, Authorization, Accept, '
+            'Access-Control-Request-Private-Network'
+        )
+        response.headers['Access-Control-Max-Age'] = '3600'
+        return response
+
+    @app.after_request
+    def add_pna_header(response):
+        """Ajoute Access-Control-Allow-Private-Network sur toutes les reponses."""
+        origin = request.headers.get('Origin', '')
+        if _origin_allowed(origin):
+            response.headers['Access-Control-Allow-Private-Network'] = 'true'
+            response.headers['Access-Control-Allow-Credentials']     = 'true'
+        return response
 
     # Vérification de la clé API sur toutes les routes sauf /health et /
     @app.before_request
@@ -832,4 +889,27 @@ def run_api_server(app=None):
     print(f"🔧 Conversion française automatique: café → cafe, hôtel → hotel, €15,50 → EUR15,50")
     print(f"✅ Compatibilité maximale avec tous les modèles d'imprimantes")
     
-    app.run(host=HOST, port=config.get('port', PORT))
+    # Chercher le certificat SSL (genere par mkcert lors de l'installation)
+    _cert_candidates = [
+        # 1. Dossier d'installation (service Windows)
+        (r"C:\Program Files\ThermalPrinterAPI\cert.pem",
+         r"C:\Program Files\ThermalPrinterAPI\key.pem"),
+        # 2. Dossier de l'executable (dev / portable)
+        (os.path.join(os.path.dirname(sys.executable), "cert.pem"),
+         os.path.join(os.path.dirname(sys.executable), "key.pem")),
+        # 3. Dossier courant
+        ("cert.pem", "key.pem"),
+    ]
+    ssl_context = None
+    for cert_crt, cert_key in _cert_candidates:
+        if os.path.exists(cert_crt) and os.path.exists(cert_key):
+            ssl_context = (cert_crt, cert_key)
+            break
+
+    if ssl_context:
+        print(f"🔒 HTTPS activé")
+        print(f"   → https://printer.localhost.direct:{config.get('port', PORT)}")
+    else:
+        print(f"⚠️  Certificat SSL non trouvé, démarrage en HTTP (localhost uniquement)")
+
+    app.run(host=HOST, port=config.get('port', PORT), ssl_context=ssl_context)

@@ -220,7 +220,9 @@ def build_installer_exe():
         "--add-data", f"{SERVICE_EXE_PATH};.",
         "--add-data", f"{CONFIG_GUI_PATH};.",
     ]
-    for fname in ("logo.png", "icon.ico", "README.md"):
+    # mkcert.exe est embarque pour fonctionner offline (evite l'erreur
+    # SSL_CERTIFICATE_VERIFY_FAILED sur les PC sans CA racine a jour).
+    for fname in ("logo.png", "icon.ico", "README.md", "mkcert.exe"):
         f = PROJECT_DIR / fname
         if f.exists():
             add_datas += ["--add-data", f"{f};."]

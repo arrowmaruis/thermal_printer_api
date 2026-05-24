@@ -490,42 +490,37 @@ def get_robust_cut_command(printer_name=None):
 
 def safe_encode_french(text, encoding='ascii', printer_name=None):
     """
-    Encodage sécurisé optimisé pour ASCII par défaut
-    SIMPLIFIÉ: Utilise toujours la conversion ASCII intelligente
-    
+    Encodage securise - ASCII pur OBLIGATOIRE pour toutes les imprimantes.
+
+    Les imprimantes thermiques 58mm n'utilisent pas toutes le meme codepage
+    (CP437, CP850, CP858, proprietaire...). Pour garantir des accents
+    lisibles partout, on convertit toujours en ASCII via
+    convert_french_to_ascii_smart.
+
     Args:
-        text (str): Texte à encoder
-        encoding (str): Encodage souhaité (ignoré si ASCII universel)
-        printer_name (str): Nom de l'imprimante (pour log)
-    
+        text (str): Texte a encoder.
+        encoding (str): Conserve pour compatibilite d'API mais ignore.
+                        ASCII force pour toutes les imprimantes.
+        printer_name (str): Nom de l'imprimante (pour log).
+
     Returns:
-        bytes: Texte encodé en ASCII avec conversion française intelligente
+        bytes: Texte encode en ASCII pur (cafe, hotel, EUR, oe, ae...).
     """
     if not text:
         return b''
 
-    # Normaliser les espaces insécables (\u202f de toLocaleString('fr-FR'), \u00a0)
-    text = text.replace('\u202f', ' ').replace('\u00a0', ' ')
+    # Normaliser les espaces insecables (NNBSP U+202F, NBSP U+00A0)
+    text = text.replace(' ', ' ').replace(' ', ' ')
 
-    # Convertir les symboles monétaires en texte ASCII lisible (même comportement que Tester ASCII)
-    # Cela garantit un affichage cohérent sur toutes les imprimantes sans dépendre du code page
-    currency_ascii = {
-        '€': 'EUR', '£': 'GBP', '¥': 'JPY', '¤': '', '₦': 'NGN',
-        '₣': 'CHF', '₹': 'INR', '₩': 'KRW', '₪': 'ILS',
-    }
-    for sym, code in currency_ascii.items():
-        text = text.replace(sym, code)
+    # Conversion ASCII intelligente : accents -> base, EUR, OE, AE, etc.
+    ascii_text = convert_french_to_ascii_smart(text)
 
     try:
-        return text.encode('cp858')
-    except (UnicodeEncodeError, LookupError):
-        # Fallback ASCII avec conversion française pour les caractères hors CP858
-        ascii_text = convert_french_to_ascii_smart(text)
-        try:
-            return ascii_text.encode('ascii', errors='strict')
-        except UnicodeEncodeError:
-            logger.warning(f"Caractères non encodables dans: '{text[:30]}...', remplacement forcé")
-            return ascii_text.encode('ascii', errors='replace')
+        return ascii_text.encode('ascii', errors='strict')
+    except UnicodeEncodeError:
+        # Caractere residuel non couvert : remplace par '?' (pas de crash).
+        logger.warning(f"Caracteres non encodables dans: '{text[:30]}...', remplacement force")
+        return ascii_text.encode('ascii', errors='replace')
 
 def print_raw(printer_name, data):
     """Imprime des donnees brutes via le spouleur Windows (USB, reseau, BT avec driver)."""

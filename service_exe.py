@@ -195,7 +195,19 @@ def _run_flask():
         app = create_app()
         host = config.get('host', '0.0.0.0')
         port = config.get('port', 5789)
-        app.run(host=host, port=port, use_reloader=False, threaded=True)
+
+        # Chercher le certificat SSL genere par mkcert lors de l'installation
+        _cert_candidates = [
+            (os.path.join(SERVICE_DIR, "cert.pem"), os.path.join(SERVICE_DIR, "key.pem")),
+            (r"C:\Program Files\ThermalPrinterAPI\cert.pem", r"C:\Program Files\ThermalPrinterAPI\key.pem"),
+        ]
+        ssl_context = None
+        for cert_crt, cert_key in _cert_candidates:
+            if os.path.exists(cert_crt) and os.path.exists(cert_key):
+                ssl_context = (cert_crt, cert_key)
+                break
+
+        app.run(host=host, port=port, use_reloader=False, threaded=True, ssl_context=ssl_context)
     except Exception as e:
         _log_error(f"Erreur critique Flask : {e}")
 

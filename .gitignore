@@ -171,3 +171,7 @@ printer_config.json
 build/
 dist/
 *.spec
+*.zip
+
+# Claude Code (local agent state)
+.claude/

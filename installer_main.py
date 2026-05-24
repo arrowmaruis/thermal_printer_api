@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import ctypes
 import time
+import urllib.request
 import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
@@ -41,6 +42,10 @@ SERVICE_DESC    = "API d'impression thermique POS. Demarre automatiquement au de
 INSTALL_DIR     = Path(r"C:\Program Files\ThermalPrinterAPI")
 SERVICE_EXE     = INSTALL_DIR / "ThermalPrinterAPI.exe"
 CONFIG_EXE      = INSTALL_DIR / "ThermalPrinterAPI_Config.exe"
+CERT_FILE       = INSTALL_DIR / "cert.pem"
+KEY_FILE        = INSTALL_DIR / "key.pem"
+MKCERT_EXE      = INSTALL_DIR / "mkcert.exe"
+MKCERT_URL      = "https://github.com/FiloSottile/mkcert/releases/download/v1.4.4/mkcert-v1.4.4-windows-amd64.exe"
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +150,136 @@ def step_copy_files(log):
     )
 
     log("Fichiers copies.")
+
+
+def step_setup_https(log):
+    """
+    Installe mkcert, genere un certificat SSL pour printer.localhost.direct
+    et l'installe comme autorite de confiance dans Windows + Chrome.
+    """
+    log("Configuration HTTPS (certificat local)...")
+
+    # 1. Chercher mkcert embarque dans le setup, sinon telecharger
+    src = get_source_dir()
+    bundled_mkcert = src / "mkcert.exe"
+
+    if bundled_mkcert.exists():
+        shutil.copy2(bundled_mkcert, MKCERT_EXE)
+        log("mkcert embarque copie.")
+    else:
+        # Fallback : telechargement reseau (utile si bundle absent)
+        # On essaie d'abord urllib (Python), puis PowerShell (truststore Windows)
+        # car certaines machines n'ont pas les CA racine a jour cote Python.
+        log("Telechargement de mkcert (urllib)...")
+        downloaded = False
+        try:
+            urllib.request.urlretrieve(MKCERT_URL, MKCERT_EXE)
+            log("mkcert telecharge.")
+            downloaded = True
+        except Exception as e:
+            log(f"  urllib echoue : {str(e)[:120]}")
+
+        if not downloaded:
+            log("Tentative via PowerShell (truststore Windows)...")
+            ps_cmd = (
+                f'powershell -NoProfile -ExecutionPolicy Bypass -Command '
+                f'"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; '
+                f'Invoke-WebRequest -Uri \'{MKCERT_URL}\' -OutFile \'{MKCERT_EXE}\' -UseBasicParsing"'
+            )
+            code, out, err = run(ps_cmd, timeout=60)
+            if code == 0 and MKCERT_EXE.exists() and MKCERT_EXE.stat().st_size > 100_000:
+                log("mkcert telecharge via PowerShell.")
+                downloaded = True
+            else:
+                log(f"  PowerShell echoue : {(err or out)[:200]}")
+
+        if not downloaded:
+            log("Avertissement : impossible de telecharger mkcert.")
+            log("HTTPS desactive — l'API tournera en HTTP.")
+            return True  # Non bloquant
+
+    # 2. Installer le CA dans Windows Certificate Store + Chrome
+    log("Installation du certificat de confiance (CA)...")
+    code, out, err = run(f'"{MKCERT_EXE}" -install', timeout=30)
+    if code != 0:
+        log(f"Avertissement CA : {(err or out)[:200]}")
+
+    # 3. Generer le certificat pour printer.localhost.direct
+    log("Generation du certificat SSL...")
+    os.chdir(str(INSTALL_DIR))
+    code, out, err = run(
+        f'"{MKCERT_EXE}" -cert-file cert.pem -key-file key.pem printer.localhost.direct',
+        timeout=30,
+    )
+    if code != 0 or not CERT_FILE.exists():
+        log(f"Avertissement cert : {(err or out)[:200]}")
+        log("HTTPS desactive — l'API tournera en HTTP.")
+        return True  # Non bloquant
+
+    log("Certificat SSL genere : cert.pem / key.pem")
+    log("HTTPS actif : https://printer.localhost.direct:5789")
+    return True
+
+
+def step_setup_chrome_policy(log):
+    """
+    Configure la politique Chrome/Edge pour autoriser hotelia.cloud
+    a acceder au reseau local.
+
+    - Private Network Access (PNA, Chrome 123+)
+        InsecurePrivateNetworkRequestsAllowedForUrls
+    - Local Network Access (LNA, Chrome 138+, remplace PNA)
+        LocalNetworkAccessAllowedForUrls
+        LocalNetworkAccessRestrictionsEnabled
+
+    Sans LNA, Chrome 138+ bloque avec "Permission was denied for this
+    request to access the loopback address space" meme si PNA est autorise.
+    """
+    import winreg
+
+    ALLOWED_URLS = [
+        "https://[*.]hotelia.cloud",
+        "https://hotelia.cloud",
+    ]
+
+    browsers = [
+        (r"SOFTWARE\Policies\Google\Chrome",           "Chrome"),
+        (r"SOFTWARE\Policies\Google\Chrome\Beta",      "Chrome Beta"),
+        (r"SOFTWARE\Policies\Microsoft\Edge",          "Edge"),
+        (r"SOFTWARE\Policies\Microsoft\Edge\Beta",     "Edge Beta"),
+    ]
+
+    for reg_path, browser_name in browsers:
+        try:
+            # --- PNA (ancien : Chrome 94-137) ---
+            urls_path = reg_path + r"\InsecurePrivateNetworkRequestsAllowedForUrls"
+            key = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, urls_path,
+                                     0, winreg.KEY_SET_VALUE)
+            for i, url in enumerate(ALLOWED_URLS, start=1):
+                winreg.SetValueEx(key, str(i), 0, winreg.REG_SZ, url)
+            winreg.CloseKey(key)
+
+            # --- LNA (nouveau : Chrome 138+) ---
+            lna_urls_path = reg_path + r"\LocalNetworkAccessAllowedForUrls"
+            key_lna = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, lna_urls_path,
+                                         0, winreg.KEY_SET_VALUE)
+            for i, url in enumerate(ALLOWED_URLS, start=1):
+                winreg.SetValueEx(key_lna, str(i), 0, winreg.REG_SZ, url)
+            winreg.CloseKey(key_lna)
+
+            # --- Cles globales (fallback) ---
+            key2 = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, reg_path,
+                                      0, winreg.KEY_SET_VALUE)
+            winreg.SetValueEx(key2, "InsecurePrivateNetworkRequestsAllowed",
+                              0, winreg.REG_DWORD, 1)
+            winreg.CloseKey(key2)
+
+            log(f"Politique {browser_name} configuree (PNA + LNA).")
+        except Exception as e:
+            log(f"Politique {browser_name} ignoree ({e}).")
+
+    log("Acces reseau local autorise pour hotelia.cloud (PNA + LNA).")
+    return True
 
 
 def step_register_service(log):
@@ -376,11 +511,13 @@ class InstallerGUI:
 
     def _run_install(self):
         steps = [
-            (20,  "Copie des fichiers",        step_copy_files),
-            (55,  "Enregistrement du service", step_register_service),
-            (75,  "Demarrage du service",       step_start_service),
-            (90,  "Raccourci menu Demarrer",    step_create_shortcut),
-            (95,  "Creation desinstallateur",   step_add_uninstaller),
+            (12,  "Copie des fichiers",              step_copy_files),
+            (35,  "Certificat HTTPS",                step_setup_https),
+            (50,  "Politique navigateur (PNA)",      step_setup_chrome_policy),
+            (65,  "Enregistrement du service",       step_register_service),
+            (82,  "Demarrage du service",            step_start_service),
+            (93,  "Raccourci menu Demarrer",         step_create_shortcut),
+            (98,  "Creation desinstallateur",        step_add_uninstaller),
         ]
 
         success = True
@@ -412,7 +549,7 @@ class InstallerGUI:
         if success:
             self.log("")
             self.log("Installation terminee !")
-            self.log("API disponible sur http://localhost:5789")
+            self.log("API disponible sur https://printer.localhost.direct:5789")
             self.log("Raccourci cree sur le bureau.")
 
             # Bouton principal : configurer les imprimantes
@@ -436,7 +573,7 @@ class InstallerGUI:
             messagebox.showinfo(
                 "Installation reussie",
                 f"{APP_DISPLAY} est installe et demarre automatiquement avec Windows.\n\n"
-                f"API accessible sur :\nhttp://localhost:5789\n\n"
+                f"API accessible sur :\nhttps://printer.localhost.direct:5789\n\n"
                 f"Cliquez sur 'Configurer les imprimantes' pour choisir votre imprimante par defaut."
             )
         else:

@@ -1,0 +1,57 @@
+Windows Registry Editor Version 5.00
+
+; ============================================================================
+; Fix Chrome 138+ Local Network Access (LNA) pour Hotelia Pilot
+; Autorise hotelia.cloud et ses sous-domaines a acceder a printer.localhost.direct
+; ============================================================================
+; Apres execution : redemarrer Chrome / Edge COMPLETEMENT (toutes les fenetres)
+; ============================================================================
+
+; ---- Chrome : PNA (ancien) ----
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome]
+"InsecurePrivateNetworkRequestsAllowed"=dword:00000001
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\InsecurePrivateNetworkRequestsAllowedForUrls]
+"1"="https://[*.]hotelia.cloud"
+"2"="https://hotelia.cloud"
+
+; ---- Chrome : LNA (Chrome 138+) ----
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\LocalNetworkAccessAllowedForUrls]
+"1"="https://[*.]hotelia.cloud"
+"2"="https://hotelia.cloud"
+
+; ---- Chrome Beta ----
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\Beta]
+"InsecurePrivateNetworkRequestsAllowed"=dword:00000001
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\Beta\InsecurePrivateNetworkRequestsAllowedForUrls]
+"1"="https://[*.]hotelia.cloud"
+"2"="https://hotelia.cloud"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\Beta\LocalNetworkAccessAllowedForUrls]
+"1"="https://[*.]hotelia.cloud"
+"2"="https://hotelia.cloud"
+
+; ---- Edge ----
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge]
+"InsecurePrivateNetworkRequestsAllowed"=dword:00000001
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge\InsecurePrivateNetworkRequestsAllowedForUrls]
+"1"="https://[*.]hotelia.cloud"
+"2"="https://hotelia.cloud"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge\LocalNetworkAccessAllowedForUrls]
+"1"="https://[*.]hotelia.cloud"
+"2"="https://hotelia.cloud"
+
+; ---- Edge Beta ----
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge\Beta]
+"InsecurePrivateNetworkRequestsAllowed"=dword:00000001
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge\Beta\InsecurePrivateNetworkRequestsAllowedForUrls]
+"1"="https://[*.]hotelia.cloud"
+"2"="https://hotelia.cloud"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge\Beta\LocalNetworkAccessAllowedForUrls]
+"1"="https://[*.]hotelia.cloud"
+"2"="https://hotelia.cloud"
