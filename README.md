@@ -41,28 +41,36 @@ API d'impression thermique pour la gestion d'imprimantes POS (58mm et 80mm) conn
 
 ```
 thermal_printer_api/
-├── installer_main.py           # Logique de l'installateur graphique
-├── build.py                    # Genere ThermalPrinterAPI_Setup.exe (PyInstaller)
-├── service.py                  # Service Windows (demarrage automatique)
-├── main.py                     # Point d'entree (lancement manuel)
-├── start.bat                   # Menu interactif (manuel / service)
-├── install_service.bat         # Installation service seule (admin)
-├── uninstall_service.bat       # Desinstallation du service (admin)
+├── build.py                    # Compile les 3 .exe (PyInstaller)
+├── installer_main.py           # Installateur GUI (compile en ThermalPrinterAPI_Setup.exe)
+├── service_exe.py              # Service Windows (compile en ThermalPrinterAPI.exe)
+├── gui_main.py                 # GUI de configuration (compile en ThermalPrinterAPI_Config.exe)
+├── main.py                     # Mode developpeur (console + GUI mixte)
+├── create_logo.py              # Utilitaire pour regenerer le logo
 ├── requirements.txt
 │
 ├── api/
-│   └── server.py               # Serveur Flask + tous les endpoints
+│   └── server.py               # Serveur Flask + endpoints (USB/BT/reseau + HTTPS)
 │
 ├── printer/
-│   ├── printer_utils.py        # Detection, encodage, impression (USB/BT/COM)
+│   ├── printer_utils.py        # Detection, encodage ASCII, impression
 │   ├── bluetooth_utils.py      # Utilitaires Bluetooth (COM + socket RFCOMM)
 │   └── receipt.py              # Moteur de formatage des recus
 │
 ├── utils/
 │   └── config.py               # Configuration globale et logging
 │
-└── gui/
-    └── config_app.py           # Interface graphique (optionnelle)
+├── gui/
+│   └── config_app.py           # Interface graphique de configuration
+│
+├── manifest_gui.xml            # Manifests Windows (PyInstaller)
+├── manifest_service.xml
+├── manifest_setup.xml
+│
+├── icon.ico                    # Icone application
+├── logo.png                    # Logo (raccourcis + installateur)
+├── mkcert.exe                  # Embarque dans le setup pour generer le cert HTTPS
+└── fix_chrome_lna.reg          # Fix runtime Chrome LNA pour PC deja deployes
 ```
 
 ---
@@ -74,24 +82,32 @@ thermal_printer_api/
 ### Methode recommandee
 
 1. Telecharger `ThermalPrinterAPI_Setup.exe`
-2. Double-cliquer dessus
+2. Double-cliquer dessus (UAC requis)
 3. Cliquer **Installer** dans la fenetre qui s'ouvre
 4. C'est tout
 
 L'installateur effectue automatiquement :
 - Copie des fichiers dans `C:\Program Files\ThermalPrinterAPI\`
-- Installation des dependances Python
+- Generation du **certificat HTTPS** (mkcert) pour `printer.localhost.direct`
+- Installation de l'autorite de certification dans Windows + Chrome
+- Configuration des **politiques Chrome/Edge** (PNA + LNA) pour `hotelia.cloud`
 - Enregistrement du **service Windows** (demarrage auto)
 - Demarrage immediat du service
-- Creation d'un raccourci dans le menu Demarrer
+- Creation des raccourcis (menu Demarrer + bureau)
 
 **Des ce moment, l'API demarre a chaque demarrage Windows — sans rien faire.**
 
-API accessible sur : `http://localhost:5789`
+API accessible sur : **`https://printer.localhost.direct:5789`**
+
+Le domaine `printer.localhost.direct` resout vers `127.0.0.1` mais beneficie d'un certificat valide, ce qui permet l'acces depuis une page HTTPS publique (`hotelia.cloud`) sans avertissement de securite.
 
 ### Desinstallation
 
 Executer `C:\Program Files\ThermalPrinterAPI\uninstall.bat` en tant qu'administrateur.
+
+### Correction Chrome sans reinstaller
+
+Si Chrome bloque avec `Permission was denied for this request to access the loopback address space` (Chrome 138+ LNA), executer le fichier [`fix_chrome_lna.reg`](fix_chrome_lna.reg) pour ajouter les politiques manquantes, puis **fermer completement Chrome** et le rouvrir.
 
 ---
 
@@ -111,9 +127,9 @@ pip install -r requirements.txt
 ### Lancement manuel
 
 ```bash
-python main.py
-# ou
-start.bat  (menu interactif)
+python main.py             # API + GUI de config
+python main.py --no-gui    # API seulement
+python main.py --port 8080 # Port personnalise
 ```
 
 ### Generer le Setup.exe a distribuer
@@ -121,19 +137,31 @@ start.bat  (menu interactif)
 ```bash
 pip install pyinstaller
 python build.py
-# -> dist/ThermalPrinterAPI_Setup.exe
+# -> dist/ThermalPrinterAPI.exe          (service Flask)
+# -> dist/ThermalPrinterAPI_Config.exe   (GUI de configuration)
+# -> dist/ThermalPrinterAPI_Setup.exe    (installateur final a distribuer)
 ```
 
-### Gestion du service (ligne de commande, admin)
+Le `Setup.exe` embarque les deux autres binaires et `mkcert.exe`. Distribuer uniquement le `Setup.exe`.
+
+### Gestion du service (apres installation)
+
+```powershell
+# Statut
+sc query "ThermalPrinterAPI"
+
+# Demarrer / arreter
+net start "ThermalPrinterAPI"
+net stop  "ThermalPrinterAPI"
+
+# Logs
+type "C:\ProgramData\ThermalPrinterAPI\logs\service.log"
+```
+
+Pour deboguer en mode visible (sans le service Windows) :
 
 ```bash
-python service.py install    # Installer le service
-python service.py start      # Demarrer
-python service.py stop       # Arreter
-python service.py restart    # Redemarrer
-python service.py status     # Statut
-python service.py remove     # Desinstaller
-python service.py debug      # Mode debug (fenetre visible)
+python main.py
 ```
 
 ---
@@ -380,23 +408,44 @@ La configuration est sauvegardee dans `printer_config.json` (cree automatiquemen
 
 | Cle | Defaut | Description |
 |---|---|---|
-| `port` | `5789` | Port HTTP de l'API |
+| `port` | `5789` | Port HTTPS de l'API |
 | `default_printer_id` | `null` | ID de l'imprimante par defaut |
 | `default_printer_width` | `"58mm"` | Largeur par defaut |
-| `force_ascii_for_all` | `true` | Force ASCII pour toutes les imprimantes |
+| `force_ascii_for_all` | `true` | Force ASCII pour toutes les imprimantes (toujours actif) |
 | `currency` | `"FCFA"` | Devise affichee sur les tickets |
 | `currency_decimals` | `0` | Decimales (0 pour FCFA, 2 pour EUR) |
 | `api_key` | `""` | Cle API (vide = pas d'auth) |
-| `allowed_origins` | `[]` | Origines CORS (vide = valeurs par defaut) |
+| `allowed_origins` | `[]` | Origines CORS supplementaires |
 
-**Origines CORS par defaut** (si `allowed_origins` est vide) :
-- `http://localhost:8000`
-- `http://127.0.0.1:8000`
-- `https://hotelia.cloud`
+**Origines CORS toujours autorisees** (en plus de `allowed_origins`) :
+- `http://localhost:5173`, `http://127.0.0.1:5173`
+- `http://localhost:8000`, `http://127.0.0.1:8000`
+- `https://hotelia.cloud` et tous ses sous-domaines (`*.hotelia.cloud`)
+
+### HTTPS et acces depuis hotelia.cloud
+
+L'installateur configure automatiquement :
+
+1. **Certificat HTTPS** via [mkcert](https://github.com/FiloSottile/mkcert) pour `printer.localhost.direct` (resout vers `127.0.0.1`)
+2. **Politique Chrome/Edge** dans le registre :
+   - `InsecurePrivateNetworkRequestsAllowedForUrls` (PNA, Chrome 94-137)
+   - `LocalNetworkAccessAllowedForUrls` (LNA, Chrome 138+)
+3. **Header serveur** `Access-Control-Allow-Private-Network: true` sur le preflight OPTIONS
+
+Sans ces 3 elements, Chrome bloque les requetes `hotelia.cloud` → `printer.localhost.direct` avec une erreur CORS sur l'acces loopback.
 
 ---
 
 ## Depannage
+
+### Chrome bloque avec "Permission was denied for this request to access the loopback address space"
+
+Chrome 138+ a introduit Local Network Access (LNA), plus strict que PNA. L'installateur configure deja la politique, mais sur les machines deployees avant mai 2026 il faut :
+
+1. Executer [`fix_chrome_lna.reg`](fix_chrome_lna.reg) en double-clic (UAC requis)
+2. Fermer **completement** Chrome (verifier le Gestionnaire des taches)
+3. Rouvrir Chrome
+4. Verifier dans `chrome://policy` que `LocalNetworkAccessAllowedForUrls` est listee
 
 ### L'imprimante BT n'apparait pas dans /printers
 
@@ -406,10 +455,29 @@ La configuration est sauvegardee dans `printer_config.json` (cree automatiquemen
 
 ### Le service ne demarre pas apres installation
 
-```bash
-python service.py debug
+Consulter les logs :
 ```
-Lance l'API en mode visible pour voir l'erreur exacte.
+C:\ProgramData\ThermalPrinterAPI\logs\service.log
+```
+
+Pour deboguer en mode visible :
+```bash
+python main.py
+```
+
+### HTTPS desactive apres installation ("API tournera en HTTP")
+
+L'installateur n'a pas pu generer le certificat. Causes possibles :
+- Pas de connexion reseau pour telecharger `mkcert.exe` (et bundle absent)
+- Antivirus bloque l'execution de `mkcert.exe`
+
+Verifier la presence de `C:\Program Files\ThermalPrinterAPI\cert.pem` et `key.pem`. Si absents, relancer l'installateur ou regenerer manuellement :
+```powershell
+cd "C:\Program Files\ThermalPrinterAPI"
+.\mkcert.exe -install
+.\mkcert.exe -cert-file cert.pem -key-file key.pem printer.localhost.direct
+sc restart ThermalPrinterAPI
+```
 
 ### Coupe papier decalee (coupe le recu suivant)
 
@@ -417,11 +485,11 @@ Lance l'API en mode visible pour voir l'erreur exacte.
 GET /test-immediate-cut/<id>
 ```
 
-### Caracteres corrompus a l'impression
+### Caracteres corrompus a l'impression (accents)
 
-L'API utilise l'ASCII universel — tous les accents sont convertis automatiquement. Si le probleme persiste :
+L'API force la conversion ASCII pour toutes les imprimantes (pas seulement les POS-58). Les accents francais sont convertis automatiquement (`cafe`, `hotel`, `EUR`, `oe`, `ae`). Si le probleme persiste, relancer le test :
 ```
-GET /encoding-test/<id>
+GET /test-printer/<id>
 ```
 
 ### Erreur port COM (Access denied / port busy)
